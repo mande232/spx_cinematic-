@@ -40,6 +40,13 @@ const CHAPTERS: Chapter[] = [
   { id: "06", title: "Future Forward", caption: "Pan-African horizons", image: chapterFuture },
 ];
 
+const POST_EXPERIENCE_ACTIONS = [
+  "Visit SPX Website",
+  "Download Company Profile",
+  "Explore Our Projects",
+  "Connect With SPX",
+] as const;
+
 const STATE_LABELS: Record<ExperienceState, { step: string; label: string; hint: string }> = {
   idle: { step: "01", label: "Idle", hint: "Ambient loop — awaiting visitor" },
   scanned: { step: "02", label: "Scanned", hint: "Session opened on device" },
@@ -55,6 +62,7 @@ const STATE_LABELS: Record<ExperienceState, { step: string; label: string; hint:
 
 function ReceptionExperience() {
   const [state, setState] = useState<ExperienceState>("idle");
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [visitorName, setVisitorName] = useState("");
   const [countdown, setCountdown] = useState(3);
   const [chapterIndex, setChapterIndex] = useState(0);
@@ -74,6 +82,29 @@ function ReceptionExperience() {
   }, []);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const savedTheme = window.localStorage.getItem("spx-theme");
+    if (savedTheme === "light" || savedTheme === "dark") {
+      setTheme(savedTheme);
+      return;
+    }
+
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    document.documentElement.classList.toggle("dark", theme === "dark");
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("spx-theme", theme);
+    }
+  }, [theme]);
 
   // Camera bootstrap
   useEffect(() => {
@@ -197,10 +228,23 @@ function ReceptionExperience() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-display selection:bg-primary/30">
-      <Header state={state} />
+      <Header
+        state={state}
+        theme={theme}
+        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+      />
 
-      <main className="pt-24 p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <section className="lg:col-span-8 space-y-4">
+      <main className="pt-32 md:pt-36 p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-5 md:gap-6 xl:gap-8">
+        <section className="lg:col-span-9 space-y-4 md:space-y-5">
+          <div className="space-y-2 px-1">
+            <h1 className="text-3xl font-black tracking-tight text-balance md:text-5xl">
+              Step into the SPX cinematic journey.
+            </h1>
+            <p className="max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+              Scan the QR code, take a portrait, and watch yourself appear on the LED wall.
+            </p>
+          </div>
+
           <div className="flex items-center justify-between">
             <h2 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
               Primary LED Surface [2.35:1]
@@ -225,10 +269,13 @@ function ReceptionExperience() {
           <StateRibbon state={state} chapterIndex={chapterIndex} />
         </section>
 
-        <section className="lg:col-span-4 flex flex-col items-center">
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted mb-4">
-            Visitor Mobile Interface
-          </span>
+        <section className="lg:col-span-3 flex flex-col items-center gap-3">
+          <div className="w-full max-w-[280px] px-1">
+            <p className="text-sm leading-6 text-muted-foreground">
+              Use your phone to enter your name, allow camera access, and capture your portrait.
+            </p>
+          </div>
+
           <PhoneFrame>
             <MobileSurface
               state={state}
@@ -258,13 +305,21 @@ function ReceptionExperience() {
 
 /* ─────────────────────────── Header ─────────────────────────── */
 
-function Header({ state }: { state: ExperienceState }) {
+function Header({
+  state,
+  theme,
+  onToggleTheme,
+}: {
+  state: ExperienceState;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
+}) {
   const session = useMemo(
     () => `${String(Math.floor(Math.random() * 9000) + 1000)}-X`,
     []
   );
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 md:px-8 py-6 border-b border-border bg-background/80 backdrop-blur-md">
+    <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 md:px-8 py-4 border-b border-border bg-background/80 backdrop-blur-md">
       <div className="flex items-center gap-4">
         <div className="size-8 bg-primary rounded-sm flex items-center justify-center font-mono text-primary-foreground font-bold tracking-tighter">
           SPX
@@ -273,7 +328,14 @@ function Header({ state }: { state: ExperienceState }) {
           Innovation Center / Reception Experience
         </span>
       </div>
-      <div className="flex items-center gap-8 text-[10px] font-mono uppercase tracking-widest text-muted">
+      <div className="flex items-center gap-2 md:gap-5 text-[10px] font-mono uppercase tracking-widest text-muted">
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          className="rounded-full border border-border bg-background px-3 py-1.5 text-[9px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        >
+          {theme === "dark" ? "Light mode" : "Dark mode"}
+        </button>
         <span className={state === "idle" ? "opacity-40" : "text-primary/80"}>
           Live Session: {session}
         </span>
@@ -418,33 +480,64 @@ function LedWall({
 
 function IdleLedContent({ onScan, scanned }: { onScan: () => void; scanned: boolean }) {
   return (
-    <div className="w-full flex items-center justify-between gap-12">
-      <div className="max-w-xl animate-entrance">
-        <span className="font-mono text-[10px] md:text-xs uppercase tracking-[0.5em] text-primary block mb-4">
+    <div className="w-full flex items-center justify-between gap-6 md:gap-10">
+      <div className="max-w-lg animate-entrance">
+        <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.35em] text-primary block mb-3">
           Welcome to SPX
         </span>
-        <h1 className="text-4xl md:text-7xl font-extrabold tracking-tighter uppercase italic leading-[0.95]">
-          Step onto the
+        <h1 className="text-3xl md:text-5xl font-extrabold tracking-tighter uppercase italic leading-[0.98]">
+          Step into the
           <br />
-          <span className="text-primary">stage.</span>
+          <span className="text-primary">SPX story.</span>
         </h1>
-        <p className="mt-6 text-sm md:text-base text-muted-foreground max-w-md text-pretty">
-          Scan the code, capture a portrait, and become the main character in a
-          cinematic journey across the SPX ecosystem.
+        <p className="mt-4 text-xs md:text-sm text-muted-foreground max-w-md text-pretty leading-5 md:leading-6">
+          Scan the code, take a portrait, and see yourself featured in a cinematic journey across
+          the SPX ecosystem.
         </p>
+
+        <div className="mt-4 grid max-w-md grid-cols-3 gap-2">
+          <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-center">
+            <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">1</span>
+            <span className="mt-1 block text-xs font-medium">Scan</span>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-center">
+            <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">2</span>
+            <span className="mt-1 block text-xs font-medium">Capture</span>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-center">
+            <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">3</span>
+            <span className="mt-1 block text-xs font-medium">Watch</span>
+          </div>
+        </div>
       </div>
 
-      <button
-        onClick={onScan}
-        className="group relative shrink-0 p-3 md:p-4 bg-white rounded-md size-32 md:size-44 hover:scale-[1.02] transition-transform"
-      >
-        <QrGlyph />
-        <div className="absolute -bottom-8 left-0 right-0 text-center">
-          <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.3em] text-muted">
-            {scanned ? "Session opened →" : "Scan to begin"}
-          </span>
+      <div className="w-full max-w-[220px] shrink-0 self-center">
+        <div className="rounded-2xl border border-white/10 bg-black/45 p-3 md:p-4 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.75)] backdrop-blur-md">
+          <div className="mb-3 text-center">
+            <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-primary">Start here</p>
+            <p className="mt-1 text-xs text-white/75">Scan the code to begin.</p>
+          </div>
+          <button
+            onClick={onScan}
+            className="group relative w-full p-2.5 md:p-3 bg-white rounded-xl hover:scale-[1.02] transition-transform"
+          >
+            <div className="aspect-square w-full">
+              <QrGlyph />
+            </div>
+          </button>
+          <div className="mt-3 text-center">
+            <span className="font-mono text-[8px] md:text-[9px] uppercase tracking-[0.24em] text-white/65">
+              {scanned ? "Session opened → continue on your phone" : "Scan to begin"}
+            </span>
+          </div>
+          <button
+            onClick={onScan}
+            className="mt-3 w-full rounded-lg bg-primary px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.18em] text-primary-foreground transition hover:brightness-110"
+          >
+            Start experience
+          </button>
         </div>
-      </button>
+      </div>
     </div>
   );
 }
@@ -503,24 +596,9 @@ function PlayingLedContent({
   return (
     <>
       {capturedImage && (
-        <div
-          key={chapter.id}
-          className="absolute inset-0 flex items-end justify-center pb-8 animate-entrance z-10"
-        >
-          <div className="relative h-[95%] aspect-[3/4] max-w-[45%]">
-            <img
-              src={capturedImage}
-              alt="Visitor"
-              className="size-full object-cover"
-              style={{
-                maskImage:
-                  "linear-gradient(to bottom, black 70%, transparent 100%), radial-gradient(ellipse at center, black 55%, transparent 78%)",
-                maskComposite: "intersect",
-                WebkitMaskImage:
-                  "linear-gradient(to bottom, black 70%, transparent 100%), radial-gradient(ellipse at center, black 55%, transparent 78%)",
-                filter: "drop-shadow(0 20px 40px rgba(0,0,0,0.7)) contrast(1.05)",
-              }}
-            />
+        <div key={chapter.id} className="absolute left-6 top-14 md:left-12 md:top-16 z-20 animate-entrance">
+          <div className="size-14 md:size-16 overflow-hidden rounded-full border border-primary/50 bg-black/40 shadow-[0_10px_30px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+            <img src={capturedImage} alt="Visitor" className="size-full object-cover" />
           </div>
         </div>
       )}
@@ -664,8 +742,8 @@ function StateRibbon({ state, chapterIndex }: { state: ExperienceState; chapterI
 
 function PhoneFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="w-full max-w-[340px] aspect-[9/19.5] bg-surface rounded-[42px] overflow-hidden relative shadow-[0_40px_80px_-20px_rgba(0,0,0,0.9)] ring-[10px] ring-neutral-900">
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 h-6 w-32 bg-black rounded-full z-40" />
+    <div className="w-full max-w-[260px] min-h-[560px] bg-surface rounded-[32px] overflow-hidden relative shadow-[0_24px_48px_-24px_rgba(0,0,0,0.7)] ring-[7px] ring-neutral-900">
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 h-5 w-28 bg-black rounded-full z-40" />
       {children}
     </div>
   );
@@ -708,8 +786,8 @@ function MobileSurface({
   );
 
   return (
-    <div className="h-full w-full pt-10 p-5 flex flex-col overflow-hidden">
-      <div className="h-4 mb-4 flex items-center justify-between px-2 text-[10px] font-mono text-muted-foreground">
+    <div className="h-full w-full pt-8 p-4 flex flex-col overflow-y-auto no-scrollbar">
+      <div className="h-4 mb-3 flex items-center justify-between px-2 text-[10px] font-mono text-muted-foreground">
         <span>9:41</span>
         <span>SPX · 5G</span>
       </div>
@@ -719,19 +797,38 @@ function MobileSurface({
           <div className="size-16 rounded-full border border-primary/30 flex items-center justify-center mb-6">
             <div className="size-3 bg-primary rounded-full animate-soft-pulse" />
           </div>
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted">
-            Awaiting scan
-          </span>
-          <p className="mt-3 text-sm text-muted-foreground max-w-[24ch]">
-            Point your camera at the QR code on the wall.
+          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted">Ready to begin</span>
+          <h3 className="mt-3 text-xl font-bold tracking-tight">Scan the QR code on the wall</h3>
+          <p className="mt-3 text-sm text-muted-foreground max-w-[26ch] leading-6">
+            Open the experience on your phone to enter your name and take a quick portrait.
           </p>
+          <div className="mt-6 w-full rounded-2xl border border-white/10 bg-white/5 p-4 text-left">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary">
+                1
+              </span>
+              <p className="text-xs leading-5 text-muted-foreground">Scan the QR code shown on the LED wall.</p>
+            </div>
+            <div className="mt-3 flex items-start gap-3">
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary">
+                2
+              </span>
+              <p className="text-xs leading-5 text-muted-foreground">Allow camera access and capture your portrait.</p>
+            </div>
+            <div className="mt-3 flex items-start gap-3">
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary">
+                3
+              </span>
+              <p className="text-xs leading-5 text-muted-foreground">Watch your scene play on the big screen.</p>
+            </div>
+          </div>
         </div>
       )}
 
       {state === "scanned" && (
         <div className="flex-1 flex flex-col animate-entrance">
           <StepChip step="Step 01" title="Welcome. Let's compose your scene." />
-          <div className="flex-1 rounded-2xl bg-gradient-to-br from-primary/20 via-black to-black ring-1 ring-white/10 p-5 flex flex-col justify-end mb-5">
+          <div className="min-h-0 rounded-2xl bg-gradient-to-br from-primary/20 via-black to-black ring-1 ring-white/10 p-5 flex flex-col justify-end mb-5">
             <span className="font-mono text-[9px] uppercase tracking-widest text-primary mb-1">
               Optional
             </span>
@@ -763,7 +860,7 @@ function MobileSurface({
             step={state === "countdown" ? "Hold still" : "Step 02"}
             title={state === "countdown" ? "Rolling in…" : "Position yourself in the light."}
           />
-          <div className="relative flex-1 rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5">
+          <div className="relative min-h-[260px] rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5">
             <video
               ref={videoRef}
               className="absolute inset-0 size-full object-cover -scale-x-100"
@@ -831,7 +928,7 @@ function MobileSurface({
                 : "Assembling your cinematic scenes."
             }
           />
-          <div className="relative flex-1 rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5">
+          <div className="relative min-h-[240px] rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5">
             {capturedImage && (
               <img src={capturedImage} alt="You" className="absolute inset-0 size-full object-cover" />
             )}
@@ -871,7 +968,7 @@ function MobileSurface({
       {state === "playing" && (
         <div className="flex-1 flex flex-col animate-entrance">
           <StepChip step="Step 05" title="Your scene is on the wall." />
-          <div className="flex-1 rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5 relative">
+          <div className="min-h-[220px] rounded-2xl overflow-hidden bg-black ring-1 ring-white/10 mb-5 relative">
             <div
               className="absolute inset-0 animate-kenburns"
               style={{
@@ -904,7 +1001,7 @@ function MobileSurface({
             step="All done"
             title={visitorName ? `Thank you, ${visitorName}.` : "Thank you for stepping in."}
           />
-          <div className="flex-1 rounded-2xl overflow-hidden ring-1 ring-primary/40 mb-5 relative">
+          <div className="min-h-[220px] rounded-2xl overflow-hidden ring-1 ring-primary/40 mb-5 relative">
             {capturedImage && (
               <img
                 src={capturedImage}
@@ -932,6 +1029,18 @@ function MobileSurface({
                 Save souvenir
               </a>
             )}
+            <div className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
+              {POST_EXPERIENCE_ACTIONS.map((action) => (
+                <button
+                  key={action}
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-background/50 px-3 py-3 text-left transition-colors hover:bg-white/10"
+                >
+                  <span className="text-[11px] font-medium tracking-tight text-foreground">{action}</span>
+                  <span className="text-primary">→</span>
+                </button>
+              ))}
+            </div>
             <button
               onClick={onReset}
               className="w-full py-3 bg-white/5 border border-white/10 font-mono uppercase tracking-widest text-[10px] rounded-xl hover:bg-white/10"
@@ -987,10 +1096,10 @@ function AdminPanel({
     "error",
   ];
   return (
-    <div className="mt-6 w-full max-w-[340px]">
+    <div className="mt-4 w-full max-w-[280px]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-2 bg-white/5 border border-white/10 text-[10px] font-mono uppercase tracking-widest hover:bg-white/10 transition-colors rounded-md"
+        className="w-full flex items-center justify-between px-3 py-2 bg-white/5 border border-white/10 text-[9px] font-mono uppercase tracking-widest hover:bg-white/10 transition-colors rounded-md"
       >
         <span>Operator / Debug</span>
         <span className="text-primary">{open ? "hide" : "show"}</span>
