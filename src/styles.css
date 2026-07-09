@@ -40,28 +40,28 @@
   --ease-cinematic: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-  --background: hsl(36 33% 97%);
-  --foreground: hsl(220 28% 12%);
-  --background: hsl(34 30% 97%);
-  --card: hsl(36 25% 99%);
-  --card-foreground: hsl(220 28% 12%);
-  --card: hsl(35 24% 98%);
-  --popover-foreground: hsl(220 28% 12%);
+:root {
+  --radius: 0.5rem;
+  --background: hsl(38 42% 94%);
+  --foreground: hsl(222 30% 14%);
+  --surface: hsl(34 32% 97%);
+  --card: hsl(34 28% 96%);
+  --card-foreground: hsl(222 30% 14%);
   --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(222 18% 16%);
-  --primary: hsl(20 76% 52%);
-  --secondary-foreground: hsl(220 24% 16%);
-  --secondary: hsl(32 18% 93%);
-  --muted-foreground: hsl(220 14% 30%);
-  --muted: hsl(34 16% 91%);
-  --muted-foreground: hsl(220 10% 42%);
-  --accent: hsl(28 38% 92%);
-  --accent-foreground: hsl(0 0% 100%);
+  --popover-foreground: hsl(222 30% 14%);
+  --primary: hsl(18 72% 50%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(34 24% 90%);
+  --secondary-foreground: hsl(222 24% 18%);
+  --muted: hsl(35 18% 88%);
+  --muted-foreground: hsl(220 16% 32%);
+  --accent: hsl(32 42% 88%);
+  --accent-foreground: hsl(222 30% 14%);
   --destructive: hsl(0 72% 56%);
   --destructive-foreground: hsl(0 0% 100%);
-  --border: hsl(220 14% 24% / 0.1);
-  --input: hsl(220 14% 24% / 0.1);
-  --ring: hsl(20 76% 52%);
+  --border: hsl(220 16% 24% / 0.12);
+  --input: hsl(220 16% 24% / 0.12);
+  --ring: hsl(18 72% 50%);
 }
 
 .dark {
@@ -126,18 +126,19 @@
 
 @layer base {
   * { border-color: var(--color-border); }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-
-  ::selection {
-    background-color: color-mix(in oklab, var(--color-primary) 24%, transparent);
-    color: var(--color-foreground);
-  }
     font-family: var(--font-display);
     line-height: 1.5;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-primary) 24%, transparent);
+    color: var(--color-foreground);
   }
 }
