@@ -1,8 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { CHAPTERS, STATE_LABELS, useSharedSession } from "@/lib/experience-state";
+import { QRCode } from "@/components/experience/QRCode";
+import { SyncIndicator } from "@/components/experience/SyncIndicator";
+import { CHAPTERS, getChapters, STATE_LABELS, trackAnalyticsEvent, useSharedSession } from "@/lib/experience-state";
 import type { Chapter, ExperienceState } from "@/lib/experience-state";
+import { getPhoneUrlFromToken } from "@/lib/pairing";
 
 export const Route = createFileRoute("/")({ component: WallView });
 
@@ -12,17 +15,21 @@ const AUDIO_URL =
   "https://res.cloudinary.com/djwboszae/video/upload/v1783506840/ElevenLabs_2026-07-08T10_28_27_Caty_-_Droll_Wry_and_Dry_pvc_s50_m2_rl2hy4.mp3";
 
 function WallView() {
-  const { session, update } = useSharedSession();
-  const { state, capturedImage, visitorName, chapterIndex } = session;
+  const { session, update, reset, online, synced, pairingToken, maintenanceMode, chapterOverrides } = useSharedSession();
+  const { state, capturedImage, processedImage, visitorName, chapterIndex } = session;
+  const displayImage = processedImage ?? capturedImage;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chapterIndexRef = useRef(chapterIndex);
   const [phoneUrl, setPhoneUrl] = useState("/phone");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    setPhoneUrl(`${window.location.origin}/phone`);
+    const configured = import.meta.env.VITE_PUBLIC_SITE_URL as string | undefined;
+    const base = configured?.replace(/\/$/, "") ? `${configured.replace(/\/$/, "")}/phone` : `${window.location.origin}/phone`;
+    setPhoneUrl(pairingToken ? getPhoneUrlFromToken(base, pairingToken) : base);
 
     const savedTheme = window.localStorage.getItem("spx-theme");
     if (savedTheme === "light" || savedTheme === "dark") {
@@ -32,7 +39,7 @@ function WallView() {
 
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     setTheme(prefersDark ? "dark" : "light");
-  }, []);
+  }, [pairingToken]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -42,21 +49,33 @@ function WallView() {
     }
   }, [theme]);
 
+  chapterIndexRef.current = chapterIndex;
+
   useEffect(() => {
     if (state !== "playing") return;
 
-    const id = setInterval(() => {
-      const current = Number(localStorage.getItem("spx-exp-chapter") ?? 0);
+    let cancelled = false;
+    let current = chapterIndexRef.current;
+
+    const advance = () => {
+      if (cancelled) return;
       const next = current + 1;
       if (next >= CHAPTERS.length) {
-        clearInterval(id);
-        setTimeout(() => update({ state: "completed" }), 800);
-      } else {
-        update({ chapterIndex: next });
+        setTimeout(() => {
+          if (!cancelled) update({ state: "completed" });
+        }, 800);
+        return;
       }
-    }, 3200);
+      current = next;
+      update({ chapterIndex: next });
+      setTimeout(advance, 3200);
+    };
 
-    return () => clearInterval(id);
+    const timer = setTimeout(advance, 3200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [state, update]);
 
   useEffect(() => {
@@ -75,8 +94,8 @@ function WallView() {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
-    update({ state: "idle", capturedImage: null, visitorName: "", chapterIndex: 0 });
-  }, [update]);
+    void reset();
+  }, [reset]);
 
   useEffect(() => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -104,44 +123,58 @@ function WallView() {
     };
   }, [resetSession, state]);
 
-  const activeChapter = CHAPTERS[Math.min(chapterIndex, CHAPTERS.length - 1)];
+  const chapters = getChapters(chapterOverrides);
+  const activeChapter = chapters[Math.min(chapterIndex, chapters.length - 1)];
   const meta = STATE_LABELS[state];
+
+  if (maintenanceMode) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6 text-center font-display">
+        <div className="max-w-lg space-y-4">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-primary">Maintenance mode</span>
+          <h1 className="text-3xl font-bold tracking-tight">SPX reception display is temporarily offline.</h1>
+          <p className="text-sm text-muted-foreground">Please check back shortly or speak with reception staff.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground font-display selection:bg-primary/30">
-      <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 md:px-8 py-4 border-b border-border bg-background/80 backdrop-blur-md">
-        <div className="flex items-center gap-4 text-foreground">
-          <div className="size-8 bg-primary rounded-sm flex items-center justify-center font-mono text-primary-foreground font-bold tracking-tighter">
+      <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between border-b border-border bg-background/85 px-4 py-4 backdrop-blur-md md:px-8">
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 items-center justify-center rounded-lg bg-primary font-mono text-sm font-bold tracking-tighter text-primary-foreground">
             SPX
           </div>
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-foreground/75 hidden sm:inline dark:text-muted">
-            Innovation Center / LED Wall
-          </span>
+          <div className="hidden sm:block">
+            <p className="text-sm font-semibold tracking-tight">Cinematic Welcome</p>
+            <p className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">LED Reception Display</p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 md:gap-4 text-[10px] font-mono uppercase tracking-widest text-foreground/70 dark:text-muted">
+        <div className="flex items-center gap-2 md:gap-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          <SyncIndicator online={online} synced={synced} />
           <button
             type="button"
             onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
             className="rounded-full border border-border bg-background/95 px-3 py-1.5 text-[9px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           >
-            {theme === "dark" ? "Light mode" : "Dark mode"}
+            {theme === "dark" ? "Light" : "Dark"}
           </button>
-          <span className={state === "idle" ? "opacity-50 text-foreground/55 dark:text-muted" : "text-primary/90"}>
+          <span className={`hidden rounded-full border px-2.5 py-1 md:inline ${state === "idle" ? "border-border text-muted-foreground" : "border-primary/30 bg-primary/10 text-primary"}`}>
             {meta.step} · {meta.label}
           </span>
-          <span className="hidden md:inline text-foreground/65 dark:text-muted">Addis Ababa · ET</span>
           {state !== "idle" && (
             <button
               onClick={resetSession}
-              className="px-2 py-1 rounded border border-white/10 text-[9px] text-muted hover:text-foreground hover:border-white/30 transition-colors"
+              className="rounded border border-border px-2 py-1 text-[9px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
             >
               Reset
             </button>
           )}
           <a
             href="/admin"
-            className="px-2 py-1 rounded border border-white/10 text-[9px] text-muted hover:text-foreground hover:border-white/30 transition-colors"
+            className="hidden rounded border border-border px-2 py-1 text-[9px] text-muted-foreground transition-colors hover:text-foreground lg:inline"
           >
             Admin
           </a>
@@ -150,20 +183,26 @@ function WallView() {
 
       <main className="pt-28 md:pt-32 p-4 md:p-8 space-y-5">
         <div className="flex items-center justify-between px-1">
-          <h2 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
             Primary LED Surface [2.35:1]
           </h2>
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted">{meta.hint}</span>
+          <span className="font-mono text-[10px] uppercase tracking-widest text-foreground">{meta.hint}</span>
         </div>
 
         <LedWall
           state={state}
           chapter={activeChapter}
           chapterIndex={chapterIndex}
-          capturedImage={capturedImage}
+          capturedImage={displayImage}
           visitorName={visitorName}
           phoneUrl={phoneUrl}
-          onScan={() => update({ state: "scanned" })}
+          onDemoStart={() => {
+            update({ state: "scanned" });
+            void trackAnalyticsEvent("wall_demo_start", {});
+            if (typeof window !== "undefined" && phoneUrl.includes("session=")) {
+              window.location.assign(phoneUrl);
+            }
+          }}
         />
 
         <nav className="pt-6 flex justify-between border-t border-border">
@@ -179,11 +218,11 @@ function WallView() {
               const isActive = item.step === meta.step;
               return (
                 <div key={item.step} className="flex flex-col gap-2 min-w-28">
-                  <span className={`font-mono text-[9px] uppercase tracking-widest ${isActive ? "text-primary" : "text-muted"}`}>
+                  <span className={`font-mono text-[9px] uppercase tracking-widest ${isActive ? "text-primary" : "text-muted-foreground"}`}>
                     {item.step} / {item.label}
                   </span>
-                  <div className={`h-[2px] w-full ${isActive ? "bg-primary" : "bg-white/10"}`} />
-                  <span className={`text-xs font-medium uppercase tracking-wider ${isActive ? "text-foreground" : "opacity-40"}`}>
+                  <div className={`h-[2px] w-full ${isActive ? "bg-primary" : "bg-foreground/10 dark:bg-white/10"}`} />
+                  <span className={`text-xs font-medium uppercase tracking-wider ${isActive ? "text-foreground" : "text-muted-foreground"}`}>
                     {item.hint}
                   </span>
                 </div>
@@ -195,27 +234,27 @@ function WallView() {
             <div className="hidden md:flex flex-col items-end gap-1 shrink-0">
               <span className="font-mono text-[9px] uppercase tracking-widest text-muted">Chapter progress</span>
               <span className="font-mono text-xs text-primary">
-                {String(chapterIndex + 1).padStart(2, "0")} / {String(CHAPTERS.length).padStart(2, "0")}
+                {String(chapterIndex + 1).padStart(2, "0")} / {String(chapters.length).padStart(2, "0")}
               </span>
             </div>
           )}
         </nav>
       </main>
 
-      <footer className="hidden lg:flex fixed bottom-0 left-0 right-0 p-6 items-end justify-between pointer-events-none">
+      <footer className="pointer-events-none fixed bottom-0 left-0 right-0 hidden items-end justify-between p-6 lg:flex">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <div className={`size-2 rounded-full ${state === "error" ? "bg-destructive" : "bg-green-500"}`} />
-            <span className="font-mono text-[10px] uppercase tracking-widest text-foreground/70 dark:text-muted">
-              {state === "error" ? "System halted" : "System nominal"}
+            <div className={`size-2 rounded-full ${state === "error" ? "bg-destructive" : online && synced ? "bg-green-500" : "bg-yellow-400"}`} />
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              {state === "error" ? "System halted" : online && synced ? "LED sync active" : "Syncing…"}
             </span>
           </div>
-          <div className="text-[10px] font-mono text-foreground/55 dark:text-muted/60">
-            LATENCY 12ms · BUFFER 4K_RAW · LED SYNC OK
+          <div className="font-mono text-[10px] text-muted-foreground">
+            Addis Ababa · ET · SPX Reception
           </div>
         </div>
         <div className="text-right">
-          <span className="block text-4xl font-black italic text-foreground/10 dark:text-white/10 leading-none tracking-tighter uppercase">
+          <span className="block text-4xl font-black italic leading-none tracking-tighter text-foreground/15 uppercase dark:text-white/10">
             Future / Forward
           </span>
         </div>
@@ -233,7 +272,7 @@ function LedWall({
   capturedImage,
   visitorName,
   phoneUrl,
-  onScan,
+  onDemoStart,
 }: {
   state: ExperienceState;
   chapter: Chapter;
@@ -241,8 +280,10 @@ function LedWall({
   capturedImage: string | null;
   visitorName: string;
   phoneUrl: string;
-  onScan: () => void;
+  onDemoStart: () => void;
 }) {
+  const isIdle = state === "idle" || state === "scanned";
+
   return (
     <div className="relative aspect-[21/9] overflow-hidden rounded-sm bg-surface ring-1 ring-black/10 dark:ring-white/10">
       <div
@@ -252,15 +293,15 @@ function LedWall({
           backgroundImage: `url(${chapter.image})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
-          filter: state === "idle" || state === "scanned" ? "grayscale(0.6) brightness(0.5)" : "brightness(0.65)",
+          filter: isIdle ? "grayscale(0.45) brightness(0.72)" : "brightness(0.78)",
           transition: "filter 1.2s var(--ease-cinematic)",
         }}
       />
-      <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/30 to-background/55 dark:from-background dark:via-background/20 dark:to-background/60" />
-      <div className="absolute top-0 inset-x-0 z-30 h-6 border-b border-black/8 bg-white/45 backdrop-blur-sm dark:border-white/5 dark:bg-black/60 md:h-8" />
-      <div className="absolute bottom-0 inset-x-0 z-30 h-6 border-t border-black/8 bg-white/45 backdrop-blur-sm dark:border-white/5 dark:bg-black/60 md:h-8" />
+      <div className="led-vignette absolute inset-0" />
+      <div className="absolute top-0 inset-x-0 z-30 h-6 border-b border-border/70 bg-background/70 backdrop-blur-sm md:h-8 dark:border-white/5 dark:bg-black/60" />
+      <div className="absolute bottom-0 inset-x-0 z-30 h-6 border-t border-border/70 bg-background/70 backdrop-blur-sm md:h-8 dark:border-white/5 dark:bg-black/60" />
       <div
-        className="absolute inset-0 opacity-[0.06] mix-blend-overlay pointer-events-none"
+        className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay"
         style={{
           backgroundImage:
             "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
@@ -268,16 +309,21 @@ function LedWall({
       />
 
       <div className="absolute inset-0 z-20 flex items-center justify-center px-6 md:px-12">
-        {(state === "idle" || state === "scanned") && (
-          <IdleLedContent onScan={onScan} scanned={state === "scanned"} phoneUrl={phoneUrl} />
+        {isIdle && (
+          <IdleLedContent
+            scanned={state === "scanned"}
+            phoneUrl={phoneUrl}
+            visitorName={visitorName}
+            onDemoStart={onDemoStart}
+          />
         )}
 
         {(state === "camera_ready" || state === "countdown" || state === "capturing") && (
           <div className="text-center animate-entrance">
-            <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.38em] text-primary/90 block mb-3">
+            <span className="mb-3 block font-mono text-[9px] uppercase tracking-[0.38em] text-primary md:text-[10px]">
               Composing you into the frame
             </span>
-            <h1 className="text-3xl md:text-5xl font-extrabold tracking-[-0.04em] uppercase italic text-foreground">
+            <h1 className="led-text-shadow text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-5xl">
               Hold still.
               <br />
               <span className="text-primary">The film is rolling.</span>
@@ -304,19 +350,19 @@ function LedWall({
 
       {state === "playing" && (
         <div className="absolute bottom-10 left-6 md:left-12 z-30 flex items-end gap-3">
-          <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-primary/90">Chapter {chapter.id}</span>
+          <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-primary">Chapter {chapter.id}</span>
           <span className="font-display text-base italic tracking-[-0.03em] text-foreground md:text-[1.6rem]">
             {chapter.title}
           </span>
-          <span className="hidden font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/65 dark:text-muted md:inline">
+          <span className="hidden font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground md:inline">
             · {chapter.caption}
           </span>
         </div>
       )}
 
       <div className="absolute top-10 right-8 z-30 flex items-center gap-2">
-        <div className={`size-1.5 rounded-full ${state === "idle" ? "bg-white/20" : "bg-primary animate-pulse"}`} />
-        <span className="font-mono text-[8px] uppercase tracking-[0.24em] text-foreground/70 dark:text-muted">
+        <div className={`size-1.5 rounded-full ${state === "idle" ? "bg-foreground/25 dark:bg-white/20" : "bg-primary animate-soft-pulse"}`} />
+        <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-foreground dark:text-muted">
           {state === "idle" ? "Standby" : "Live"}
         </span>
       </div>
@@ -324,7 +370,7 @@ function LedWall({
       {state === "playing" && (
         <div className="absolute top-10 left-8 z-30 flex gap-1">
           {CHAPTERS.map((c, i) => (
-            <div key={c.id} className={`h-[2px] w-6 transition-colors ${i <= chapterIndex ? "bg-primary" : "bg-white/15"}`} />
+            <div key={c.id} className={`h-[2px] w-6 transition-colors ${i <= chapterIndex ? "bg-primary" : "bg-foreground/15 dark:bg-white/15"}`} />
           ))}
         </div>
       )}
@@ -333,73 +379,61 @@ function LedWall({
 }
 
 function IdleLedContent({
-  onScan,
   scanned,
   phoneUrl,
+  visitorName,
+  onDemoStart,
 }: {
-  onScan: () => void;
   scanned: boolean;
   phoneUrl: string;
+  visitorName: string;
+  onDemoStart: () => void;
 }) {
   return (
-    <div className="w-full flex items-center justify-between gap-6 md:gap-10">
-      <div className="max-w-lg animate-entrance">
-        <span className="font-mono text-[8px] md:text-[9px] uppercase tracking-[0.32em] text-primary/90 block mb-3">
-          Welcome to SPX
+    <div className="flex w-full max-w-5xl flex-col items-center gap-8 md:flex-row md:items-center md:justify-between md:gap-12">
+      {/* Left — welcome + demo */}
+      <div className="led-copy-panel w-full max-w-md animate-entrance rounded-2xl p-6 text-center md:text-left">
+        <span className="font-mono text-[10px] uppercase tracking-[0.35em] text-primary">
+          {scanned ? "Connected" : "Welcome to SPX"}
         </span>
-        <h1 className="text-3xl md:text-[3.4rem] font-extrabold tracking-[-0.05em] uppercase italic leading-[0.96] text-foreground">
-          Step into the
+        <h1 className="led-text-shadow mt-3 text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-4xl">
+          Step into
           <br />
-          <span className="text-primary">SPX story.</span>
+          <span className="text-primary">the story.</span>
         </h1>
-        <p className="mt-4 max-w-md text-pretty text-[12px] leading-5 text-foreground/72 dark:text-muted-foreground md:text-sm md:leading-6">
-          Scan the code to open the separate phone experience, then watch the story unfold here on the wall.
-        </p>
-        <div className="mt-4 grid max-w-md grid-cols-3 gap-2">
-          {["Scan", "Capture", "Watch"].map((label, i) => (
-            <div key={label} className="rounded-xl border border-black/10 bg-white/35 px-3 py-2 text-center dark:border-white/10 dark:bg-black/20">
-              <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">{i + 1}</span>
-              <span className="mt-1 block text-[11px] font-semibold text-foreground">{label}</span>
-            </div>
-          ))}
-        </div>
+        {scanned ? (
+          <p className="mt-3 font-mono text-[9px] uppercase tracking-widest text-primary">
+            {visitorName ? `${visitorName} connected` : "Phone connected"} — continue on your device
+          </p>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Scan the QR with your phone, or open the phone flow here for a demo.
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={onDemoStart}
+          disabled={scanned || !phoneUrl.includes("session=")}
+          className={`mt-6 w-full rounded-xl px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] transition md:w-auto ${
+            scanned || !phoneUrl.includes("session=")
+              ? "cursor-not-allowed border border-border bg-background/60 text-muted-foreground"
+              : "bg-primary text-primary-foreground hover:brightness-110"
+          }`}
+        >
+          {scanned ? "Session active" : phoneUrl.includes("session=") ? "Demo start" : "Preparing…"}
+        </button>
       </div>
 
-      <div className="w-full max-w-[220px] shrink-0 self-center">
-        <div className={`rounded-2xl border p-3 md:p-4 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.35)] backdrop-blur-md dark:shadow-[0_24px_80px_-24px_rgba(0,0,0,0.75)] ${scanned ? "border-primary/30 bg-white/80 dark:bg-black/55" : "border-black/10 bg-white/72 dark:border-white/10 dark:bg-black/45"}`}>
-          <div className="mb-3 text-center">
-            <p className="font-mono text-[8px] uppercase tracking-[0.24em] text-primary">{scanned ? "Connected" : "Start here"}</p>
-            <p className="mt-1 text-[11px] text-foreground/72 dark:text-white/75">
-              {scanned ? "Phone route opened." : "Open /phone to begin."}
-            </p>
+      {/* Right — QR only */}
+      <div className="w-full max-w-[260px] shrink-0 animate-entrance">
+        <div className={`rounded-[1.75rem] bg-white p-3 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.3)] ring-1 ring-black/5 ${scanned ? "ring-2 ring-primary/40" : ""}`}>
+          <div className="overflow-hidden rounded-[1.25rem]">
+            <QRCode value={phoneUrl} size={240} className="size-full object-contain" />
           </div>
-          <button onClick={onScan} className="w-full p-2.5 md:p-3 rounded-xl bg-white hover:scale-[1.02] transition-transform">
-            <div className="aspect-square w-full">
-              {scanned ? (
-                <div className="flex h-full items-center justify-center rounded-lg border border-primary/30 bg-primary/10 dark:bg-black/20">
-                  <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-primary">Route active</span>
-                </div>
-              ) : (
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(phoneUrl)}&bgcolor=ffffff&color=000000&margin=2`}
-                  alt="Scan to open phone experience"
-                  className="w-full h-full object-contain"
-                />
-              )}
-            </div>
-          </button>
-          <div className="mt-3 text-center">
-            <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-foreground/65 dark:text-white/65 md:text-[9px]">
-              {scanned ? "Continue at /phone" : "Scan to begin"}
-            </span>
-          </div>
-          <button
-            onClick={onScan}
-            className={`mt-3 w-full rounded-lg px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] transition ${scanned ? "bg-white/10 text-white/80" : "bg-primary text-primary-foreground hover:brightness-110"}`}
-          >
-            {scanned ? "Phone route live" : "Start experience"}
-          </button>
         </div>
+        <p className="mt-3 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
+          Scan with your phone
+        </p>
       </div>
     </div>
   );
@@ -414,10 +448,10 @@ function ProcessingLedContent({
 }) {
   return (
     <div className="text-center animate-entrance">
-      <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary/90 block mb-3">
+      <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary block mb-3">
         {state === "processing" ? "Isolating subject" : "Assembling film"}
       </span>
-      <h1 className="text-3xl md:text-5xl font-extrabold tracking-[-0.04em] uppercase italic text-foreground">
+      <h1 className="led-text-shadow text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-5xl">
         Generative
         <br />
         Experience
@@ -428,7 +462,7 @@ function ProcessingLedContent({
             <img src={capturedImage} alt="You" className="size-full object-cover" />
           </div>
         )}
-        <div className="w-40 md:w-72 h-[3px] bg-white/10 overflow-hidden rounded-full">
+        <div className="w-40 md:w-72 h-[3px] overflow-hidden rounded-full bg-foreground/10 dark:bg-white/10">
           <div className="h-full bg-primary" style={{ width: state === "processing" ? "45%" : "88%", transition: "width 1.6s var(--ease-cinematic)" }} />
         </div>
       </div>
@@ -453,9 +487,9 @@ function PlayingLedContent({
         </div>
       )}
       <div className="absolute right-6 md:right-12 top-1/2 -translate-y-1/2 z-20 text-right max-w-xs animate-entrance">
-        <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-primary/90 block mb-2">Chapter {chapter.id}</span>
-        <h2 className="text-2xl md:text-[2.5rem] font-bold italic tracking-[-0.04em] text-foreground">{chapter.title}</h2>
-        <p className="mt-2 text-xs md:text-sm text-foreground/70 dark:text-muted-foreground text-pretty leading-5">{chapter.caption}</p>
+        <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-primary block mb-2">Chapter {chapter.id}</span>
+        <h2 className="led-text-shadow text-2xl font-bold italic tracking-[-0.04em] text-foreground md:text-[2.5rem]">{chapter.title}</h2>
+        <p className="mt-2 text-pretty text-xs leading-5 text-muted-foreground md:text-sm">{chapter.caption}</p>
       </div>
     </>
   );
@@ -464,8 +498,8 @@ function PlayingLedContent({
 function CompletedLedContent({ visitorName }: { visitorName: string }) {
   return (
     <div className="text-center animate-entrance">
-      <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary/90 block mb-4">The film is yours</span>
-      <h1 className="text-4xl md:text-6xl font-extrabold tracking-[-0.05em] uppercase italic leading-none text-foreground">
+      <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary block mb-4">The film is yours</span>
+      <h1 className="led-text-shadow text-4xl font-extrabold uppercase italic leading-none tracking-[-0.05em] text-foreground md:text-6xl">
         Welcome
         {visitorName ? (
           <>
@@ -481,7 +515,7 @@ function CompletedLedContent({ visitorName }: { visitorName: string }) {
           </>
         )}
       </h1>
-      <p className="mt-5 text-sm text-foreground/70 dark:text-muted-foreground">A souvenir is waiting on your device.</p>
+      <p className="mt-5 text-sm text-muted-foreground">A souvenir is waiting on your device.</p>
     </div>
   );
 }

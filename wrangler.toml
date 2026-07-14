@@ -1,0 +1,13 @@
+# Cloudflare Workers bindings for production persistence.
+# Create a KV namespace and replace the id before deploying:
+#   npx wrangler kv namespace create SPX_KV
+#
+# Optional R2 bucket for photo storage (future):
+#   npx wrangler r2 bucket create spx-photos
+
+name = "spx-cinematic-welcome"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "SPX_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

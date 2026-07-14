@@ -13,7 +13,7 @@
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
 
-  --font-display: "Inter Tight", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Inter Tight", "Inter", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
   --color-background: var(--background);
@@ -42,26 +42,30 @@
 
 :root {
   --radius: 0.5rem;
-  --background: hsl(38 42% 94%);
-  --foreground: hsl(222 30% 14%);
-  --surface: hsl(34 32% 97%);
-  --card: hsl(34 28% 96%);
-  --card-foreground: hsl(222 30% 14%);
+  --background: hsl(220 28% 97%);
+  --foreground: hsl(222 40% 12%);
+  --surface: hsl(0 0% 100%);
+  --card: hsl(210 35% 98%);
+  --card-foreground: hsl(222 40% 12%);
   --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(222 30% 14%);
-  --primary: hsl(18 72% 50%);
+  --popover-foreground: hsl(222 40% 12%);
+  --primary: hsl(217 85% 48%);
   --primary-foreground: hsl(0 0% 100%);
-  --secondary: hsl(34 24% 90%);
-  --secondary-foreground: hsl(222 24% 18%);
-  --muted: hsl(35 18% 88%);
-  --muted-foreground: hsl(220 16% 32%);
-  --accent: hsl(32 42% 88%);
-  --accent-foreground: hsl(222 30% 14%);
-  --destructive: hsl(0 72% 56%);
+  --secondary: hsl(214 28% 92%);
+  --secondary-foreground: hsl(222 30% 18%);
+  --muted: hsl(214 22% 90%);
+  --muted-foreground: hsl(220 18% 32%);
+  --accent: hsl(214 45% 94%);
+  --accent-foreground: hsl(222 40% 12%);
+  --destructive: hsl(0 72% 50%);
   --destructive-foreground: hsl(0 0% 100%);
-  --border: hsl(220 16% 24% / 0.12);
-  --input: hsl(220 16% 24% / 0.12);
-  --ring: hsl(18 72% 50%);
+  --border: hsl(214 22% 78%);
+  --input: hsl(214 22% 78%);
+  --ring: hsl(217 85% 48%);
+  --led-scrim-top: hsl(220 28% 97% / 0.88);
+  --led-scrim-mid: hsl(220 28% 97% / 0.35);
+  --led-scrim-bottom: hsl(220 28% 97% / 0.72);
+  --track-inactive: hsl(222 40% 12% / 0.14);
 }
 
 .dark {
@@ -85,6 +89,10 @@
   --border: hsl(34 18% 95% / 0.08);
   --input: hsl(34 18% 95% / 0.08);
   --ring: hsl(20 76% 58%);
+  --led-scrim-top: hsl(222 24% 9% / 0.92);
+  --led-scrim-mid: hsl(222 24% 9% / 0.35);
+  --led-scrim-bottom: hsl(222 24% 9% / 0.78);
+  --track-inactive: hsl(34 18% 95% / 0.15);
 }
 
 @keyframes cinematic-entrance {
@@ -124,6 +132,58 @@
   scrollbar-width: none;
 }
 
+@utility glass-panel {
+  background: color-mix(in oklab, var(--color-surface) 94%, var(--color-background));
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+}
+
+.dark .glass-panel {
+  background: color-mix(in oklab, var(--color-surface) 82%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-border) 80%, transparent);
+}
+
+@utility led-vignette {
+  background: linear-gradient(
+    to top,
+    var(--led-scrim-top) 0%,
+    var(--led-scrim-mid) 45%,
+    var(--led-scrim-bottom) 100%
+  );
+}
+
+@utility led-copy-panel {
+  border: 1px solid var(--color-border);
+  background: color-mix(in oklab, var(--color-background) 92%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.dark .led-copy-panel {
+  border-color: transparent;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+@utility led-text-shadow {
+  text-shadow: 0 1px 12px color-mix(in oklab, var(--color-background) 80%, transparent);
+}
+
+.dark .led-text-shadow {
+  text-shadow: 0 2px 24px hsl(0 0% 0% / 0.45);
+}
+
+@utility glow-primary {
+  box-shadow: 0 0 40px color-mix(in oklab, var(--color-primary) 25%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-entrance,
+  .animate-soft-pulse,
+  .animate-kenburns {
+    animation: none !important;
+  }
+}
+
 @layer base {
   * { border-color: var(--color-border); }
 
@@ -131,7 +191,9 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-display);
-    line-height: 1.5;
+    line-height: 1.55;
+    font-weight: 500;
+    letter-spacing: -0.015em;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
