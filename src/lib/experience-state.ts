@@ -241,6 +241,7 @@ export function useSharedSession() {
   const [online, setOnline] = useState(true);
   const [synced, setSynced] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [storageShared, setStorageShared] = useState<boolean | null>(null);
   const latestUpdatedAtRef = useRef<number>(0);
 
   useEffect(() => {
@@ -302,6 +303,9 @@ export function useSharedSession() {
       }
       setMaintenanceMode(envelope.maintenanceMode);
       setChapterOverrides(envelope.chapterOverrides ?? []);
+      if (typeof envelope.storageShared === "boolean") {
+        setStorageShared(envelope.storageShared);
+      }
       if (typeof window !== "undefined") {
         localStorage.setItem(LS_MAINTENANCE_KEY, String(envelope.maintenanceMode));
       }
@@ -391,6 +395,7 @@ export function useSharedSession() {
     chapterOverrides,
     syncError,
     clearSyncError,
+    storageShared,
   };
 }
 

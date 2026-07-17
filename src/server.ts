@@ -31,7 +31,7 @@ import {
   setMaintenanceMode,
   updateChapterOverrides,
 } from "./lib/server-store";
-import { setStorageEnv, type StorageEnv } from "./lib/storage-adapter";
+import { isSharedStorageActive, setStorageEnv, type StorageEnv } from "./lib/storage-adapter";
 import type { ChapterOverride, SharedSession } from "./lib/shared-types";
 import { toSessionEnvelope } from "./lib/shared-types";
 
@@ -205,12 +205,16 @@ async function handleExperienceApi(request: Request, rawEnv: unknown): Promise<R
   }
 
   if (url.pathname === "/api/health" && request.method === "GET") {
-    return json({ ok: true, timestamp: Date.now() });
+    return json({
+      ok: true,
+      timestamp: Date.now(),
+      storageShared: isSharedStorageActive(env),
+    });
   }
 
   if (url.pathname === "/api/session" && request.method === "GET") {
     const store = await readStore(env);
-    return json(toSessionEnvelope(store));
+    return json({ ...toSessionEnvelope(store), storageShared: isSharedStorageActive(env) });
   }
 
   if (url.pathname === "/api/session/join" && request.method === "POST") {

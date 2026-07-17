@@ -125,6 +125,11 @@ function hasRemoteBackend(env?: StorageEnv): boolean {
   return Boolean(env?.SPX_KV) || getRestKvConfig() !== null;
 }
 
+/** True when a shared cross-instance backend (Cloudflare KV or REST KV) is configured. */
+export function isSharedStorageActive(env?: StorageEnv): boolean {
+  return hasRemoteBackend(env ?? globalStore.__spxStorageEnv);
+}
+
 function scheduleSave(store: StoreData, env?: StorageEnv): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {

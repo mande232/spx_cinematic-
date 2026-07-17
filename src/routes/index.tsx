@@ -16,7 +16,7 @@ const AUDIO_URL =
   "https://res.cloudinary.com/djwboszae/video/upload/v1783506840/ElevenLabs_2026-07-08T10_28_27_Caty_-_Droll_Wry_and_Dry_pvc_s50_m2_rl2hy4.mp3";
 
 function WallView() {
-  const { session, update, reset, online, synced, pairingToken, maintenanceMode, chapterOverrides } = useSharedSession();
+  const { session, update, reset, online, synced, pairingToken, maintenanceMode, chapterOverrides, storageShared } = useSharedSession();
   const { state, capturedImage, processedImage, visitorName, chapterIndex } = session;
   const displayImage = processedImage ?? capturedImage;
 
@@ -299,6 +299,18 @@ function WallView() {
       </header>
 
       <main className="pt-28 md:pt-32 p-4 md:p-8 space-y-5">
+        {storageShared === false && typeof window !== "undefined" && !["localhost", "127.0.0.1"].includes(window.location.hostname) && (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-destructive block mb-1">
+              Shared storage not configured
+            </span>
+            <p className="text-muted-foreground">
+              QR pairing will fail on this hosting because each server instance keeps its own session.
+              Add an Upstash Redis database (env vars <code className="font-mono text-xs">UPSTASH_REDIS_REST_URL</code> and{" "}
+              <code className="font-mono text-xs">UPSTASH_REDIS_REST_TOKEN</code>) and redeploy.
+            </p>
+          </div>
+        )}
         <div className="flex items-center justify-between px-1">
           <h2 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
             Primary LED Surface [2.35:1]

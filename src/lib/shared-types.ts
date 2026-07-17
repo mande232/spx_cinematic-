@@ -63,6 +63,8 @@ export type SessionEnvelope = {
   maintenanceMode: boolean;
   consentRequired: boolean;
   chapterOverrides: ChapterOverride[];
+  /** Whether the server uses a shared cross-instance store (required on serverless hosts). */
+  storageShared?: boolean;
 };
 
 export const CHAPTER_COUNT = 6;
