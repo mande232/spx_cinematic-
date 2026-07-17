@@ -232,15 +232,23 @@ export async function processPortraitRemote(
 }
 
 export function useSharedSession() {
-  const [session, setSession] = useState<SharedSession>(readSession);
-  const [pairingToken, setPairingToken] = useState<string | null>(readPairingToken);
+  // Start from the default session on both server and client so SSR hydration
+  // matches; localStorage state is restored in an effect after mount.
+  const [session, setSession] = useState<SharedSession>(() => ({ ...DEFAULT_SESSION }));
+  const [pairingToken, setPairingToken] = useState<string | null>(null);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [chapterOverrides, setChapterOverrides] = useState<ChapterOverride[]>([]);
-  const [online, setOnline] = useState(
-    typeof navigator !== "undefined" ? navigator.onLine : true,
-  );
+  const [online, setOnline] = useState(true);
   const [synced, setSynced] = useState(true);
   const latestUpdatedAtRef = useRef<number>(0);
+
+  useEffect(() => {
+    const restored = readSession();
+    latestUpdatedAtRef.current = restored.updatedAt ?? 0;
+    setSession(restored);
+    setPairingToken(readPairingToken());
+    if (typeof navigator !== "undefined") setOnline(navigator.onLine);
+  }, []);
 
   useEffect(() => {
     const onOnline = () => setOnline(true);
