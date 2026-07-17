@@ -85,7 +85,9 @@ export function createPairingToken(): string {
 
 export function createDefaultStore(): StoreData {
   return {
-    session: { ...DEFAULT_SESSION, updatedAt: Date.now() },
+    // updatedAt 0 so a freshly created store (e.g. on a cold serverless
+    // instance) never wins over a live client session during sync.
+    session: { ...DEFAULT_SESSION, updatedAt: 0 },
     visitors: [],
     sessionStartedAt: null,
     pairingToken: createPairingToken(),

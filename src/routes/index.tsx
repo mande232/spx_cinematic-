@@ -3,8 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { QRCode } from "@/components/experience/QRCode";
 import { SyncIndicator } from "@/components/experience/SyncIndicator";
-import { applyClientCutout } from "@/lib/background-removal";
-import { CHAPTERS, getChapters, processPortraitRemote, STATE_LABELS, trackAnalyticsEvent, useSharedSession } from "@/lib/experience-state";
+import { CHAPTERS, getChapters, STATE_LABELS, trackAnalyticsEvent, useSharedSession } from "@/lib/experience-state";
 import type { Chapter, ExperienceState } from "@/lib/experience-state";
 import { compressPortrait } from "@/lib/image-utils";
 import { getPhoneUrlFromToken } from "@/lib/pairing";
@@ -150,19 +149,14 @@ function WallView() {
     return () => window.clearInterval(timer);
   }, [state, stopWallCamera, update]);
 
+  // Background removal is disabled for now — the raw capture is shown as-is.
   useEffect(() => {
     if (state !== "processing" || !capturedImage) return;
-    let cancelled = false;
-    void (async () => {
-      const remote = await processPortraitRemote(capturedImage);
-      const processed = remote?.processedImage ?? (await applyClientCutout(capturedImage));
-      if (cancelled) return;
-      update({ processedImage: processed, state: "rendering" });
-      void trackAnalyticsEvent("portrait_processed", { method: remote?.method ?? "client_cutout" });
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const timer = window.setTimeout(() => {
+      update({ processedImage: null, state: "rendering" });
+      void trackAnalyticsEvent("portrait_processed", { method: "raw" });
+    }, 600);
+    return () => window.clearTimeout(timer);
   }, [capturedImage, state, update]);
 
   useEffect(() => {
@@ -664,14 +658,8 @@ function PlayingLedContent({
     <>
       {capturedImage && (
         <div className="absolute left-2 top-1/2 z-20 -translate-y-1/2 animate-entrance md:left-6">
-          <div className="relative size-36 overflow-hidden rounded-full border-2 border-primary/45 bg-transparent shadow-[0_14px_36px_rgba(0,0,0,0.5)] md:size-52 lg:size-64">
-            <div className="absolute inset-0 bg-gradient-to-br from-primary/15 via-transparent to-black/15" />
-            <img
-              src={capturedImage}
-              alt="Visitor"
-              className="relative z-10 size-full object-contain drop-shadow-[0_10px_16px_rgba(0,0,0,0.55)]"
-            />
-            <div className="pointer-events-none absolute inset-0 z-20 rounded-full ring-1 ring-inset ring-white/15" />
+          <div className="size-36 overflow-hidden rounded-full border-2 border-primary/50 bg-black/40 shadow-[0_14px_36px_rgba(0,0,0,0.5)] md:size-52 lg:size-64">
+            <img src={capturedImage} alt="Visitor" className="size-full object-cover" />
           </div>
         </div>
       )}
