@@ -115,6 +115,12 @@
   100% { background-position: 200% 0; }
 }
 
+@keyframes npc-watch-idle {
+  0%, 100% { transform: perspective(900px) rotateY(-5deg) rotateZ(-0.4deg) translateY(0); }
+  45% { transform: perspective(900px) rotateY(2deg) rotateZ(0.5deg) translateY(-1.2%); }
+  70% { transform: perspective(900px) rotateY(5deg) rotateZ(0deg) translateY(-0.4%); }
+}
+
 @utility animate-entrance {
   animation: cinematic-entrance 0.8s var(--ease-cinematic) both;
 }
@@ -125,6 +131,10 @@
 
 @utility animate-kenburns {
   animation: kenburns 20s var(--ease-cinematic) both;
+}
+
+@utility animate-npc-watch {
+  animation: npc-watch-idle 6.5s ease-in-out infinite;
 }
 
 @utility no-scrollbar {
@@ -179,7 +189,8 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-entrance,
   .animate-soft-pulse,
-  .animate-kenburns {
+  .animate-kenburns,
+  .animate-npc-watch {
     animation: none !important;
   }
 }

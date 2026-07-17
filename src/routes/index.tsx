@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { QRCode } from "@/components/experience/QRCode";
 import { SyncIndicator } from "@/components/experience/SyncIndicator";
-import { CHAPTERS, getChapters, STATE_LABELS, trackAnalyticsEvent, useSharedSession } from "@/lib/experience-state";
+import { applyClientCutout } from "@/lib/background-removal";
+import { CHAPTERS, getChapters, processPortraitRemote, STATE_LABELS, trackAnalyticsEvent, useSharedSession } from "@/lib/experience-state";
 import type { Chapter, ExperienceState } from "@/lib/experience-state";
+import { compressPortrait } from "@/lib/image-utils";
 import { getPhoneUrlFromToken } from "@/lib/pairing";
 
 export const Route = createFileRoute("/")({ component: WallView });
@@ -20,10 +22,15 @@ function WallView() {
   const displayImage = processedImage ?? capturedImage;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const cameraRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chapterIndexRef = useRef(chapterIndex);
   const [phoneUrl, setPhoneUrl] = useState("/phone");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
+  const [wallCountdown, setWallCountdown] = useState(3);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -50,6 +57,122 @@ function WallView() {
   }, [theme]);
 
   chapterIndexRef.current = chapterIndex;
+
+  const stopWallCamera = useCallback(() => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (cameraRef.current) cameraRef.current.srcObject = null;
+  }, []);
+
+  useEffect(() => () => stopWallCamera(), [stopWallCamera]);
+
+  useEffect(() => {
+    if (state !== "camera_ready" && state !== "countdown") {
+      if (state !== "capturing") stopWallCamera();
+      return;
+    }
+    if (cameraStreamRef.current) return;
+
+    let cancelled = false;
+    void navigator.mediaDevices
+      .getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      })
+      .then(async (stream) => {
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        cameraStreamRef.current = stream;
+        setCameraError(null);
+        if (cameraRef.current) {
+          cameraRef.current.srcObject = stream;
+          await cameraRef.current.play().catch(() => undefined);
+        }
+      })
+      .catch(() => {
+        setCameraError("LED camera unavailable. Allow camera access on this display and retry.");
+        update({ state: "error" });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state, stopWallCamera, update]);
+
+  useEffect(() => {
+    if (state !== "countdown") return;
+    setWallCountdown(3);
+    let remaining = 3;
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setWallCountdown(remaining);
+        return;
+      }
+
+      window.clearInterval(timer);
+      const video = cameraRef.current;
+      const canvas = captureCanvasRef.current;
+      if (!video || !canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        setCameraError("The LED camera was not ready. Please retry.");
+        update({ state: "error" });
+        stopWallCamera();
+        return;
+      }
+
+      update({ state: "capturing" });
+      void (async () => {
+        const width = video.videoWidth || 1280;
+        const height = video.videoHeight || 720;
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          update({ state: "error" });
+          return;
+        }
+        context.translate(width, 0);
+        context.scale(-1, 1);
+        context.drawImage(video, 0, 0, width, height);
+        const portrait = await compressPortrait(canvas.toDataURL("image/jpeg", 0.92));
+        update({ capturedImage: portrait, processedImage: null, state: "capturing" });
+        void trackAnalyticsEvent("wall_camera_captured", {});
+        stopWallCamera();
+      })();
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [state, stopWallCamera, update]);
+
+  useEffect(() => {
+    if (state !== "processing" || !capturedImage) return;
+    let cancelled = false;
+    void (async () => {
+      const remote = await processPortraitRemote(capturedImage);
+      const processed = remote?.processedImage ?? (await applyClientCutout(capturedImage));
+      if (cancelled) return;
+      update({ processedImage: processed, state: "rendering" });
+      void trackAnalyticsEvent("portrait_processed", { method: remote?.method ?? "client_cutout" });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [capturedImage, state, update]);
+
+  useEffect(() => {
+    if (state !== "rendering") return;
+    const timer = window.setTimeout(() => {
+      update({ state: "playing", chapterIndex: 0 });
+      void trackAnalyticsEvent("playback_started", {});
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [state, update]);
 
   useEffect(() => {
     if (state !== "playing") return;
@@ -196,6 +319,9 @@ function WallView() {
           capturedImage={displayImage}
           visitorName={visitorName}
           phoneUrl={phoneUrl}
+          cameraRef={cameraRef}
+          countdown={wallCountdown}
+          cameraError={cameraError}
           onDemoStart={() => {
             update({ state: "scanned" });
             void trackAnalyticsEvent("wall_demo_start", {});
@@ -261,6 +387,7 @@ function WallView() {
       </footer>
 
       <audio ref={audioRef} src={AUDIO_URL} preload="auto" />
+      <canvas ref={captureCanvasRef} className="hidden" aria-hidden="true" />
     </div>
   );
 }
@@ -272,6 +399,9 @@ function LedWall({
   capturedImage,
   visitorName,
   phoneUrl,
+  cameraRef,
+  countdown,
+  cameraError,
   onDemoStart,
 }: {
   state: ExperienceState;
@@ -280,6 +410,9 @@ function LedWall({
   capturedImage: string | null;
   visitorName: string;
   phoneUrl: string;
+  cameraRef: React.RefObject<HTMLVideoElement | null>;
+  countdown: number;
+  cameraError: string | null;
   onDemoStart: () => void;
 }) {
   const isIdle = state === "idle" || state === "scanned";
@@ -319,16 +452,13 @@ function LedWall({
         )}
 
         {(state === "camera_ready" || state === "countdown" || state === "capturing") && (
-          <div className="text-center animate-entrance">
-            <span className="mb-3 block font-mono text-[9px] uppercase tracking-[0.38em] text-primary md:text-[10px]">
-              Composing you into the frame
-            </span>
-            <h1 className="led-text-shadow text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-5xl">
-              Hold still.
-              <br />
-              <span className="text-primary">The film is rolling.</span>
-            </h1>
-          </div>
+          <WallCameraContent
+            state={state}
+            videoRef={cameraRef}
+            countdown={countdown}
+            capturedImage={capturedImage}
+            error={cameraError}
+          />
         )}
 
         {(state === "processing" || state === "rendering") && (
@@ -470,6 +600,59 @@ function ProcessingLedContent({
   );
 }
 
+function WallCameraContent({
+  state,
+  videoRef,
+  countdown,
+  capturedImage,
+  error,
+}: {
+  state: ExperienceState;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  countdown: number;
+  capturedImage: string | null;
+  error: string | null;
+}) {
+  const reviewing = state === "capturing" && Boolean(capturedImage);
+
+  return (
+    <div className="grid w-full max-w-4xl items-center gap-6 animate-entrance md:grid-cols-[1.2fr_0.8fr]">
+      <div className="relative aspect-video overflow-hidden rounded-2xl border border-primary/30 bg-black shadow-2xl">
+        {reviewing ? (
+          <img src={capturedImage!} alt="Captured visitor" className="size-full object-cover" />
+        ) : (
+          <video ref={videoRef} className="size-full -scale-x-100 object-cover" playsInline muted />
+        )}
+        <div className="pointer-events-none absolute inset-5 rounded-xl border border-primary/35" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-black/20" />
+        {state === "countdown" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/25">
+            <span key={countdown} className="animate-entrance text-7xl font-black italic text-primary md:text-9xl">
+              {countdown}
+            </span>
+          </div>
+        )}
+        <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/65 px-3 py-1 font-mono text-[9px] uppercase tracking-widest text-white">
+          {reviewing ? "Photo sent to phone for review" : "LED camera active"}
+        </span>
+      </div>
+      <div className="text-center md:text-left">
+        <span className="font-mono text-[9px] uppercase tracking-[0.35em] text-primary">
+          {reviewing ? "Review on your phone" : state === "countdown" ? "Capturing portrait" : "Camera ready"}
+        </span>
+        <h1 className="led-text-shadow mt-3 text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-5xl">
+          {reviewing ? "Approve or retake." : "Look at the camera."}
+        </h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {error ?? (reviewing
+            ? "Your phone is now the remote control for this portrait."
+            : "Stand in the marked area. Trigger the photo from your phone when ready.")}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function PlayingLedContent({
   chapter,
   capturedImage,
@@ -480,9 +663,15 @@ function PlayingLedContent({
   return (
     <>
       {capturedImage && (
-        <div className="absolute left-6 top-14 md:left-12 md:top-16 z-20 animate-entrance">
-          <div className="size-14 md:size-16 overflow-hidden rounded-full border border-primary/50 bg-black/40 shadow-[0_10px_30px_rgba(0,0,0,0.45)] backdrop-blur-sm">
-            <img src={capturedImage} alt="Visitor" className="size-full object-cover" />
+        <div className="absolute left-2 top-1/2 z-20 -translate-y-1/2 animate-entrance md:left-6">
+          <div className="relative size-36 overflow-hidden rounded-full border-2 border-primary/45 bg-transparent shadow-[0_14px_36px_rgba(0,0,0,0.5)] md:size-52 lg:size-64">
+            <div className="absolute inset-0 bg-gradient-to-br from-primary/15 via-transparent to-black/15" />
+            <img
+              src={capturedImage}
+              alt="Visitor"
+              className="relative z-10 size-full object-contain drop-shadow-[0_10px_16px_rgba(0,0,0,0.55)]"
+            />
+            <div className="pointer-events-none absolute inset-0 z-20 rounded-full ring-1 ring-inset ring-white/15" />
           </div>
         </div>
       )}

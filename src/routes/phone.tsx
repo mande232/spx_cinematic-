@@ -2,14 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ExperienceProgress } from "@/components/experience/ExperienceProgress";
 import { SyncIndicator } from "@/components/experience/SyncIndicator";
-import { applyClientCutout } from "@/lib/background-removal";
-import { compressPortrait } from "@/lib/image-utils";
 import {
   CHAPTERS,
   SPX_PROJECTS,
   fetchSharedSession,
   joinServerSession,
-  processPortraitRemote,
   trackAnalyticsEvent,
   useSharedSession,
 } from "@/lib/experience-state";
@@ -28,22 +25,10 @@ function PhoneView() {
   const [sessionEnded, setSessionEnded] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [invalidPairing, setInvalidPairing] = useState(false);
-  const [reviewImage, setReviewImage] = useState<string | null>(null);
   const [joining, setJoining] = useState(true);
   const hadActiveSessionRef = useRef(false);
   const bootstrappedRef = useRef(false);
   const urlTokenRef = useRef(readSessionTokenFromUrl());
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  const stopCamera = useCallback(() => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  }, []);
-
-  useEffect(() => () => stopCamera(), [stopCamera]);
 
   useEffect(() => {
     if (bootstrappedRef.current) return;
@@ -108,132 +93,49 @@ function PhoneView() {
     }
     if (state === "idle" && hadActiveSessionRef.current) {
       setSessionEnded(true);
-      stopCamera();
     }
-  }, [state, stopCamera]);
+  }, [state]);
 
+  // Mirror the LED-wall countdown locally for remote UI feedback.
   useEffect(() => {
-    if (state !== "camera_ready" && state !== "countdown") return;
-    if (streamRef.current) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 1280 } },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => undefined);
-        }
-      } catch {
-        setErrorMessage("Camera access denied. Open your browser settings and allow camera access, then try again.");
-        update({ state: "error" });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [state, update]);
-
-  useEffect(() => {
-    if (state !== "countdown") return;
+    if (state !== "countdown") {
+      setCountdown(3);
+      return;
+    }
     setCountdown(3);
-    let n = 3;
-    const id = setInterval(() => {
-      n -= 1;
-      if (n <= 0) {
-        clearInterval(id);
-        update({ state: "capturing" });
-        void (async () => {
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          if (video && canvas) {
-            const w = video.videoWidth || 720;
-            const h = video.videoHeight || 720;
-            canvas.width = w;
-            canvas.height = h;
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              ctx.translate(w, 0);
-              ctx.scale(-1, 1);
-              ctx.drawImage(video, 0, 0, w, h);
-              const raw = canvas.toDataURL("image/jpeg", 0.92);
-              const compressed = await compressPortrait(raw);
-              setReviewImage(compressed);
-            }
-          }
-          stopCamera();
-        })();
-      } else {
-        setCountdown(n);
+    let remaining = 3;
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(timer);
+        setCountdown(0);
+        return;
       }
+      setCountdown(remaining);
     }, 1000);
-    return () => clearInterval(id);
-  }, [state, stopCamera]);
-
-  useEffect(() => {
-    if (state !== "processing") return;
-    let cancelled = false;
-
-    void (async () => {
-      const source = capturedImage ?? reviewImage;
-      if (!source) return;
-      const remote = await processPortraitRemote(source);
-      const processed = remote?.processedImage ?? (await applyClientCutout(source));
-      if (cancelled) return;
-      update({ processedImage: processed, state: "rendering" });
-      void trackAnalyticsEvent("portrait_processed", { method: remote?.method ?? "client_cutout" });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [state, capturedImage, reviewImage, update]);
-
-  useEffect(() => {
-    if (state === "rendering") {
-      const t = setTimeout(() => {
-        update({ state: "playing", chapterIndex: 0 });
-        void trackAnalyticsEvent("playback_started", {});
-      }, 1800);
-      return () => clearTimeout(t);
-    }
-  }, [state, update]);
+    return () => window.clearInterval(timer);
+  }, [state]);
 
   const confirmPortrait = useCallback(() => {
-    if (!reviewImage) return;
-    update({ capturedImage: reviewImage, state: "processing" });
-    setReviewImage(null);
+    if (!capturedImage) return;
+    update({ state: "processing" });
     void trackAnalyticsEvent("portrait_confirmed", {});
-  }, [reviewImage, update]);
+  }, [capturedImage, update]);
 
   const retakePortrait = useCallback(() => {
-    setReviewImage(null);
-    update({ state: "camera_ready" });
+    update({ state: "camera_ready", capturedImage: null, processedImage: null });
   }, [update]);
 
   const endSession = useCallback(() => {
-    stopCamera();
     setErrorMessage(null);
-    setCountdown(3);
-    setReviewImage(null);
     setSessionEnded(false);
     setSessionBusy(false);
     hadActiveSessionRef.current = false;
     void reset();
-  }, [stopCamera, reset]);
+  }, [reset]);
 
   const retrySession = useCallback(() => {
-    stopCamera();
     setErrorMessage(null);
-    setCountdown(3);
-    setReviewImage(null);
     setSessionEnded(false);
     setSessionBusy(false);
     void fetchSharedSession().then((envelope) => {
@@ -248,11 +150,11 @@ function PhoneView() {
         });
       }
     });
-  }, [stopCamera, update]);
+  }, [update]);
 
   const activeChapter = CHAPTERS[Math.min(chapterIndex, CHAPTERS.length - 1)];
-  const stepIndex = getPhoneStepIndex(state, Boolean(reviewImage));
-  const reviewing = Boolean(reviewImage);
+  const reviewing = state === "capturing" && Boolean(capturedImage);
+  const stepIndex = getPhoneStepIndex(state, reviewing);
 
   return (
     <div className="min-h-screen bg-background text-foreground font-display dark">
@@ -287,7 +189,7 @@ function PhoneView() {
           {sessionEnded && !invalidPairing && <SessionEndedScreen onRestart={retrySession} />}
 
           {!joining && !sessionEnded && !sessionBusy && !invalidPairing && reviewing && (
-            <ReviewScreen image={reviewImage!} onRetake={retakePortrait} onConfirm={confirmPortrait} />
+            <ReviewScreen image={capturedImage!} onRetake={retakePortrait} onConfirm={confirmPortrait} />
           )}
 
           {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && (state === "idle" || state === "scanned") && (
@@ -301,10 +203,9 @@ function PhoneView() {
           )}
 
           {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && (state === "camera_ready" || state === "countdown" || state === "capturing") && (
-            <CameraScreen
+            <RemoteCameraScreen
               state={state}
               countdown={countdown}
-              videoRef={videoRef}
               onCapture={() => update({ state: "countdown" })}
             />
           )}
@@ -330,7 +231,6 @@ function PhoneView() {
           )}
         </div>
       </div>
-      <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
     </div>
   );
 }
@@ -440,62 +340,62 @@ function ScannedScreen({
         disabled={!consentGiven}
         className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
       >
-        Enable camera
+        Prepare LED camera
       </button>
       <p className="mt-4 text-center font-mono text-[10px] leading-relaxed text-muted-foreground">
-        Your photo is used only for this playback and stored in the visitor log.
+        The camera mounted at the LED wall takes your photo. This phone is only your remote and review screen.
       </p>
     </div>
   );
 }
 
-function CameraScreen({
+function RemoteCameraScreen({
   state,
   countdown,
-  videoRef,
   onCapture,
 }: {
   state: ExperienceState;
   countdown: number;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
   onCapture: () => void;
 }) {
   return (
     <div className="flex flex-1 flex-col animate-entrance">
       <StepChip
-        step={state === "countdown" ? "Hold still" : "Step 02"}
-        title={state === "countdown" ? "Rolling in…" : "Position yourself in the light."}
-        subtitle={state === "camera_ready" ? "Center your face inside the frame." : undefined}
+        step={state === "countdown" || state === "capturing" ? "Hold still" : "Step 02"}
+        title={state === "countdown" ? "LED camera is counting down…" : state === "capturing" ? "Photo captured." : "Position yourself at the LED wall."}
+        subtitle={state === "camera_ready" ? "Look at the camera mounted above the display, then trigger it here." : "Keep looking at the LED camera."}
       />
-      <div className="relative mb-5 min-h-[300px] overflow-hidden rounded-2xl bg-black ring-1 ring-primary/20">
-        <video ref={videoRef} className="absolute inset-0 size-full -scale-x-100 object-cover" playsInline muted />
-        <div className="pointer-events-none absolute inset-6 rounded-2xl border border-primary/30" />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/20" />
+      <div className="relative mb-5 flex min-h-[300px] items-center justify-center overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-muted/30">
+        <div className="absolute inset-6 rounded-2xl border border-dashed border-primary/30" />
+        <div className="relative flex flex-col items-center gap-4 text-center">
+          <div className="flex size-24 items-center justify-center rounded-full border border-primary/40 bg-primary/10">
+            <span className="text-4xl" aria-hidden="true">◉</span>
+          </div>
+          <div>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">LED wall camera</span>
+            <span className="mt-1 block text-sm text-muted-foreground">
+              {state === "camera_ready" ? "Ready for remote trigger" : state === "countdown" ? "Capturing in a moment" : "Sending preview to this phone"}
+            </span>
+          </div>
+        </div>
         {state === "countdown" && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/25 backdrop-blur-[2px]">
-            <div className="flex size-32 items-center justify-center rounded-full border border-primary/50 bg-black/40">
-              <span key={countdown} className="animate-entrance text-7xl font-black italic tracking-tighter text-primary">
-                {countdown}
-              </span>
-            </div>
+          <div className="absolute right-4 top-4 flex size-12 items-center justify-center rounded-full border border-primary/40 bg-background/80">
+            <span className="font-mono text-lg font-bold text-primary">{countdown}</span>
           </div>
         )}
-        <div className="absolute bottom-3 left-0 right-0 flex justify-center">
-          <span className="rounded-full border border-white/10 bg-black/60 px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-white/80 backdrop-blur-lg">
-            {state === "camera_ready" ? "Front camera active" : "Capturing"}
-          </span>
-        </div>
       </div>
       {state === "camera_ready" ? (
         <button
           onClick={onCapture}
           className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98]"
         >
-          Capture portrait
+          Take photo on LED camera
         </button>
       ) : (
         <div className="w-full rounded-xl bg-muted/30 py-4 text-center">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Please stand by</span>
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            {state === "capturing" ? "Waiting for photo preview…" : "Please hold still and watch the wall"}
+          </span>
         </div>
       )}
     </div>
