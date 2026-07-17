@@ -359,15 +359,9 @@ function ScannedScreen({
   };
 
   return (
-    <div className="flex flex-1 flex-col animate-entrance">
-      <StepChip
-        step="Step 01"
-        title="Welcome to SPX."
-        subtitle="You're connected to the LED wall. Add your name if you'd like it on screen, then enable your camera."
-      />
-      <div className="glass-panel glow-primary mb-5 rounded-2xl p-5">
-        <label className="mb-2 block font-mono text-[9px] uppercase tracking-widest text-primary">Optional</label>
-        <p className="mb-3 text-sm text-muted-foreground">What should we call you on screen?</p>
+    <div className="flex flex-1 flex-col justify-center animate-entrance">
+      <StepChip step="Welcome" title="Step into the story." />
+      <div className="glass-panel glow-primary mb-4 rounded-2xl p-5">
         <input
           value={localName}
           onChange={(e) => handleNameChange(e.target.value)}
@@ -375,20 +369,20 @@ function ScannedScreen({
             if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
             if (localName !== visitorName) setVisitorName(localName);
           }}
-          placeholder="Your first name"
+          placeholder="Your name (optional)"
           style={{ fontSize: "16px" }}
           className="w-full rounded-xl border border-border bg-background/60 px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
         />
       </div>
-      <label className="mb-5 flex items-start gap-3 rounded-xl border border-border bg-background/40 p-4">
+      <label className="mb-6 flex items-start gap-3 rounded-xl border border-border bg-background/40 p-4">
         <input
           type="checkbox"
           checked={consentGiven}
           onChange={(e) => setConsentGiven(e.target.checked)}
-          className="mt-1 size-4 rounded border-border"
+          className="mt-0.5 size-4 rounded border-border"
         />
         <span className="text-xs leading-relaxed text-muted-foreground">
-          I consent to my portrait being captured, displayed on the LED wall, and stored in the visitor log for this reception experience.
+          I'm okay with my photo appearing on the LED wall.
         </span>
       </label>
       <button
@@ -396,11 +390,8 @@ function ScannedScreen({
         disabled={!consentGiven}
         className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
       >
-        Prepare LED camera
+        Start
       </button>
-      <p className="mt-4 text-center font-mono text-[10px] leading-relaxed text-muted-foreground">
-        The camera mounted at the LED wall takes your photo. This phone is only your remote and review screen.
-      </p>
     </div>
   );
 }
