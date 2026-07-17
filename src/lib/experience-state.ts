@@ -112,13 +112,19 @@ function writeWholeSession(session: SharedSession) {
   writeSession(session);
 }
 
-async function fetchServerEnvelope(): Promise<SessionEnvelope | null> {
+type EnvelopeResponse = Omit<SessionEnvelope, "session"> & {
+  session?: SharedSession;
+  unchanged?: boolean;
+};
+
+async function fetchServerEnvelope(since?: number): Promise<EnvelopeResponse | null> {
   if (typeof window === "undefined") return null;
 
   try {
-    const response = await fetch("/api/session", { cache: "no-store" });
+    const url = since ? `/api/session?since=${since}` : "/api/session";
+    const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) return null;
-    return (await response.json()) as SessionEnvelope;
+    return (await response.json()) as EnvelopeResponse;
   } catch {
     return null;
   }
@@ -290,7 +296,7 @@ export function useSharedSession() {
     let cancelled = false;
 
     const sync = async () => {
-      const envelope = await fetchServerEnvelope();
+      const envelope = await fetchServerEnvelope(latestUpdatedAtRef.current || undefined);
       if (cancelled) return;
       if (!envelope) {
         setSynced(false);
@@ -310,11 +316,16 @@ export function useSharedSession() {
         localStorage.setItem(LS_MAINTENANCE_KEY, String(envelope.maintenanceMode));
       }
 
-      const serverUpdatedAt = envelope.session.updatedAt ?? 0;
-      if (serverUpdatedAt >= latestUpdatedAtRef.current) {
-        latestUpdatedAtRef.current = serverUpdatedAt;
-        writeWholeSession(envelope.session);
-        setSession(envelope.session);
+      // Only apply strictly newer sessions. Re-applying an equal-timestamp
+      // session would rewrite the (potentially large) captured image into
+      // localStorage and re-render every poll — a visible periodic glitch.
+      if (envelope.session) {
+        const serverUpdatedAt = envelope.session.updatedAt ?? 0;
+        if (serverUpdatedAt > latestUpdatedAtRef.current) {
+          latestUpdatedAtRef.current = serverUpdatedAt;
+          writeWholeSession(envelope.session);
+          setSession(envelope.session);
+        }
       }
       setSynced(true);
     };
@@ -400,7 +411,9 @@ export function useSharedSession() {
 }
 
 export async function fetchSharedSession(): Promise<SessionEnvelope | null> {
-  return fetchServerEnvelope();
+  const envelope = await fetchServerEnvelope();
+  if (!envelope?.session) return null;
+  return envelope as SessionEnvelope;
 }
 
 export async function adminPatchSession(

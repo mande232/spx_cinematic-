@@ -214,7 +214,16 @@ async function handleExperienceApi(request: Request, rawEnv: unknown): Promise<R
 
   if (url.pathname === "/api/session" && request.method === "GET") {
     const store = await readStore(env);
-    return json({ ...toSessionEnvelope(store), storageShared: isSharedStorageActive(env) });
+    const envelope = { ...toSessionEnvelope(store), storageShared: isSharedStorageActive(env) };
+
+    // Long-poll optimization: when the client already has this session
+    // version, omit the session body (which can carry a large photo).
+    const since = Number(url.searchParams.get("since") ?? 0);
+    if (since > 0 && (store.session.updatedAt ?? 0) <= since) {
+      const { session: _session, ...meta } = envelope;
+      return json({ ...meta, unchanged: true });
+    }
+    return json(envelope);
   }
 
   if (url.pathname === "/api/session/join" && request.method === "POST") {
