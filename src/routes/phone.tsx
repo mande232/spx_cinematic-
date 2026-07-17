@@ -17,7 +17,7 @@ import { getPhoneStepIndex, isSessionBusy } from "@/lib/session-utils";
 export const Route = createFileRoute("/phone")({ component: PhoneView });
 
 function PhoneView() {
-  const { session, update, reset, online, synced } = useSharedSession();
+  const { session, update, reset, online, synced, syncError, clearSyncError } = useSharedSession();
   const { state, capturedImage, processedImage, visitorName, chapterIndex, consentGiven } = session;
 
   const [countdown, setCountdown] = useState(3);
@@ -95,6 +95,34 @@ function PhoneView() {
       setSessionEnded(true);
     }
   }, [state]);
+
+  // A rejected write usually means our pairing token went stale (e.g. the
+  // wall reset the session). Try rejoining with the URL token once; if that
+  // also fails, ask the visitor to rescan the QR code.
+  const rejoiningRef = useRef(false);
+  useEffect(() => {
+    if (syncError !== "invalid_pairing" || rejoiningRef.current) return;
+    rejoiningRef.current = true;
+
+    const token = urlTokenRef.current;
+    if (!token) {
+      setInvalidPairing(true);
+      rejoiningRef.current = false;
+      return;
+    }
+
+    void joinServerSession(token).then((result) => {
+      rejoiningRef.current = false;
+      clearSyncError();
+      if (result.error === "invalid_pairing") {
+        setInvalidPairing(true);
+        return;
+      }
+      if (result.error === "session_busy") {
+        setSessionBusy(true);
+      }
+    });
+  }, [syncError, clearSyncError]);
 
   // Mirror the LED-wall countdown locally for remote UI feedback.
   useEffect(() => {
@@ -306,6 +334,30 @@ function ScannedScreen({
   setConsentGiven: (v: boolean) => void;
   onNext: () => void;
 }) {
+  // Keep typing local; sync to the shared session only after a pause so each
+  // keystroke doesn't trigger a server write (and can't be clobbered by one).
+  const [localName, setLocalName] = useState(visitorName);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localNameRef = useRef(localName);
+  localNameRef.current = localName;
+
+  useEffect(() => () => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+  }, []);
+
+  const handleNameChange = (value: string) => {
+    const next = value.slice(0, 24);
+    setLocalName(next);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => setVisitorName(localNameRef.current), 600);
+  };
+
+  const handleNext = () => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    if (localName !== visitorName) setVisitorName(localName);
+    onNext();
+  };
+
   return (
     <div className="flex flex-1 flex-col animate-entrance">
       <StepChip
@@ -317,8 +369,12 @@ function ScannedScreen({
         <label className="mb-2 block font-mono text-[9px] uppercase tracking-widest text-primary">Optional</label>
         <p className="mb-3 text-sm text-muted-foreground">What should we call you on screen?</p>
         <input
-          value={visitorName}
-          onChange={(e) => setVisitorName(e.target.value.slice(0, 24))}
+          value={localName}
+          onChange={(e) => handleNameChange(e.target.value)}
+          onBlur={() => {
+            if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+            if (localName !== visitorName) setVisitorName(localName);
+          }}
           placeholder="Your first name"
           style={{ fontSize: "16px" }}
           className="w-full rounded-xl border border-border bg-background/60 px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
@@ -336,7 +392,7 @@ function ScannedScreen({
         </span>
       </label>
       <button
-        onClick={onNext}
+        onClick={handleNext}
         disabled={!consentGiven}
         className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
       >

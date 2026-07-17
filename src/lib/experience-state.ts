@@ -240,6 +240,7 @@ export function useSharedSession() {
   const [chapterOverrides, setChapterOverrides] = useState<ChapterOverride[]>([]);
   const [online, setOnline] = useState(true);
   const [synced, setSynced] = useState(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const latestUpdatedAtRef = useRef<number>(0);
 
   useEffect(() => {
@@ -330,26 +331,40 @@ export function useSharedSession() {
     latestUpdatedAtRef.current = nextSession.updatedAt;
 
     void writeServerSession(patch, readPairingToken()).then(({ session: serverSession, pairingToken: nextToken, error }) => {
-      if (nextToken) {
-        writePairingToken(nextToken);
-        setPairingToken(nextToken);
-      }
       if (error === "session_busy" && serverSession) {
+        if (nextToken) {
+          writePairingToken(nextToken);
+          setPairingToken(nextToken);
+        }
         writeWholeSession(serverSession);
         setSession(serverSession);
         setSynced(true);
+        return;
+      }
+      if (error) {
+        // Do NOT overwrite local state (e.g. a name being typed) with the
+        // stale server session on rejected writes; surface the error instead.
+        setSyncError(error);
+        setSynced(false);
         return;
       }
       if (!serverSession) {
         setSynced(false);
         return;
       }
+      if (nextToken) {
+        writePairingToken(nextToken);
+        setPairingToken(nextToken);
+      }
+      setSyncError(null);
       latestUpdatedAtRef.current = serverSession.updatedAt ?? Date.now();
       writeWholeSession(serverSession);
       setSession(serverSession);
       setSynced(true);
     });
   }, []);
+
+  const clearSyncError = useCallback(() => setSyncError(null), []);
 
   const reset = useCallback(async () => {
     const result = await resetServerSession(readPairingToken());
@@ -365,7 +380,18 @@ export function useSharedSession() {
     return next;
   }, []);
 
-  return { session, update, reset, online, synced, pairingToken, maintenanceMode, chapterOverrides };
+  return {
+    session,
+    update,
+    reset,
+    online,
+    synced,
+    pairingToken,
+    maintenanceMode,
+    chapterOverrides,
+    syncError,
+    clearSyncError,
+  };
 }
 
 export async function fetchSharedSession(): Promise<SessionEnvelope | null> {
