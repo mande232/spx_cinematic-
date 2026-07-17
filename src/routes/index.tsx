@@ -25,7 +25,6 @@ function WallView() {
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const chapterIndexRef = useRef(chapterIndex);
   const [phoneUrl, setPhoneUrl] = useState("/phone");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [wallCountdown, setWallCountdown] = useState(3);
@@ -54,8 +53,6 @@ function WallView() {
       window.localStorage.setItem("spx-theme", theme);
     }
   }, [theme]);
-
-  chapterIndexRef.current = chapterIndex;
 
   const stopWallCamera = useCallback(() => {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -168,32 +165,23 @@ function WallView() {
     return () => window.clearTimeout(timer);
   }, [state, update]);
 
+  // One timer per chapter, keyed to the current chapter index. Duplicate
+  // drivers (second tab, server echo) set the same next index, which is
+  // idempotent — playback can never accelerate or "scratch".
   useEffect(() => {
     if (state !== "playing") return;
 
-    let cancelled = false;
-    let current = chapterIndexRef.current;
-
-    const advance = () => {
-      if (cancelled) return;
-      const next = current + 1;
-      if (next >= CHAPTERS.length) {
-        setTimeout(() => {
-          if (!cancelled) update({ state: "completed" });
-        }, 800);
-        return;
+    const isLastChapter = chapterIndex >= CHAPTERS.length - 1;
+    const timer = window.setTimeout(() => {
+      if (isLastChapter) {
+        update({ state: "completed" });
+      } else {
+        update({ chapterIndex: chapterIndex + 1 });
       }
-      current = next;
-      update({ chapterIndex: next });
-      setTimeout(advance, 3200);
-    };
+    }, isLastChapter ? 4000 : 3200);
 
-    const timer = setTimeout(advance, 3200);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [state, update]);
+    return () => window.clearTimeout(timer);
+  }, [state, chapterIndex, update]);
 
   useEffect(() => {
     if (state === "playing") {
