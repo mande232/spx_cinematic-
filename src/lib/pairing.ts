@@ -18,7 +18,8 @@ export function clearPairingToken(): void {
 export function getPhoneUrlFromToken(baseUrl: string, token: string): string {
   const url = new URL(baseUrl, typeof window !== "undefined" ? window.location.origin : "http://localhost");
   url.searchParams.set("session", token);
-  return url.pathname + url.search;
+  // QR scanners on phones require an absolute URL — pathname alone has no host.
+  return url.toString();
 }
 
 export function readSessionTokenFromUrl(): string | null {

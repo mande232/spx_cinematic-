@@ -5,9 +5,14 @@ import { createDefaultStore, migrateStoreData } from "./shared-types";
 import { isSessionBusy } from "./session-utils";
 
 describe("pairing", () => {
-  it("builds phone URL with session token", () => {
+  it("builds absolute phone URL with session token", () => {
     const url = getPhoneUrlFromToken("https://example.com/phone", "abc123");
-    expect(url).toBe("/phone?session=abc123");
+    expect(url).toBe("https://example.com/phone?session=abc123");
+  });
+
+  it("keeps absolute origin when base is a path", () => {
+    const url = getPhoneUrlFromToken("/phone", "abc123");
+    expect(url).toMatch(/^https?:\/\/.+\/phone\?session=abc123$/);
   });
 });
 
