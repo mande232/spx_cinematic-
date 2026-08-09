@@ -1,26 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExperienceProgress } from "@/components/experience/ExperienceProgress";
 import { SyncIndicator } from "@/components/experience/SyncIndicator";
 import {
-  CHAPTERS,
   SPX_PROJECTS,
   fetchSharedSession,
   joinServerSession,
   trackAnalyticsEvent,
   useSharedSession,
 } from "@/lib/experience-state";
-import type { ExperienceState } from "@/lib/experience-state";
 import { readSessionTokenFromUrl, writePairingToken } from "@/lib/pairing";
-import { getPhoneStepIndex, isSessionBusy } from "@/lib/session-utils";
+import { isSessionBusy } from "@/lib/session-utils";
 
 export const Route = createFileRoute("/phone")({ component: PhoneView });
 
 function PhoneView() {
   const { session, update, reset, online, synced, syncError, clearSyncError } = useSharedSession();
-  const { state, capturedImage, processedImage, visitorName, chapterIndex, consentGiven } = session;
+  const { state, visitorName, visitorEmail, processedImage, capturedImage } = session;
+  const souvenirImage = processedImage ?? capturedImage;
 
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [invalidPairing, setInvalidPairing] = useState(false);
@@ -124,7 +121,6 @@ function PhoneView() {
   }, [syncError, clearSyncError]);
 
   const endSession = useCallback(() => {
-    setErrorMessage(null);
     setSessionEnded(false);
     setSessionBusy(false);
     hadActiveSessionRef.current = false;
@@ -132,7 +128,6 @@ function PhoneView() {
   }, [reset]);
 
   const retrySession = useCallback(() => {
-    setErrorMessage(null);
     setSessionEnded(false);
     setSessionBusy(false);
     void fetchSharedSession().then((envelope) => {
@@ -147,11 +142,21 @@ function PhoneView() {
         });
       }
     });
-  }, [update]);
+  }, []);
 
-  const activeChapter = CHAPTERS[Math.min(chapterIndex, CHAPTERS.length - 1)];
-  const reviewing = false;
-  const stepIndex = getPhoneStepIndex(state, reviewing);
+  // On mobile we skip the LED flow entirely — once the visitor saves their
+  // details we jump straight to the completed (business profile) view.
+  const [submitted, setSubmitted] = useState(false);
+
+  const handleSubmit = useCallback(
+    (name: string, email: string) => {
+      void update({ visitorName: name, visitorEmail: email, state: "completed" });
+      setSubmitted(true);
+    },
+    [update],
+  );
+
+  const showCompleted = submitted || state === "completed";
 
   return (
     <div className="min-h-screen bg-background text-foreground font-display dark">
@@ -170,14 +175,10 @@ function PhoneView() {
         </header>
 
         <div className="flex flex-1 flex-col px-4 pb-8 pt-4">
-          {!joining && !sessionEnded && !sessionBusy && (
-            <ExperienceProgress activeIndex={stepIndex} />
-          )}
-
           {joining && (
             <div className="flex flex-1 flex-col items-center justify-center gap-3">
               <div className="size-8 animate-soft-pulse rounded-full border-2 border-primary border-t-transparent" />
-              <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Connecting to LED…</p>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Connecting…</p>
             </div>
           )}
 
@@ -185,34 +186,16 @@ function PhoneView() {
           {sessionBusy && !invalidPairing && <SessionBusyScreen onRetry={retrySession} />}
           {sessionEnded && !invalidPairing && <SessionEndedScreen onRestart={retrySession} />}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && (state === "idle" || state === "scanned") && (
-            <ScannedScreen
-              visitorName={visitorName}
-              consentGiven={consentGiven}
-              setVisitorName={(v) => update({ visitorName: v })}
-              setConsentGiven={(v) => update({ consentGiven: v })}
-              onNext={() => update({ state: "camera_ready" })}
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !showCompleted && (
+            <VisitorFormScreen
+              initialName={visitorName}
+              initialEmail={visitorEmail}
+              onSubmit={handleSubmit}
             />
           )}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && (state === "camera_ready" || state === "countdown" || state === "capturing" || state === "processing" || state === "rendering") && (
-            <ProcessingScreen state={state} capturedImage={processedImage ?? capturedImage} />
-          )}
-
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "playing" && (
-            <PlayingScreen activeChapter={activeChapter} visitorName={visitorName} />
-          )}
-
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "completed" && (
-            <CompletedScreen
-              visitorName={visitorName}
-              capturedImage={processedImage ?? capturedImage}
-              onReset={endSession}
-            />
-          )}
-
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "error" && (
-            <ErrorScreen message={errorMessage} onReset={retrySession} />
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && showCompleted && (
+            <CompletedScreen visitorName={visitorName} souvenirImage={souvenirImage} onReset={endSession} />
           )}
         </div>
       </div>
@@ -278,147 +261,55 @@ function SessionEndedScreen({ onRestart }: { onRestart: () => void }) {
   );
 }
 
-function ScannedScreen({
-  visitorName,
-  consentGiven,
-  setVisitorName,
-  setConsentGiven,
-  onNext,
+function VisitorFormScreen({
+  initialName,
+  initialEmail,
+  onSubmit,
 }: {
-  visitorName: string;
-  consentGiven: boolean;
-  setVisitorName: (v: string) => void;
-  setConsentGiven: (v: boolean) => void;
-  onNext: () => void;
+  initialName: string;
+  initialEmail: string;
+  onSubmit: (name: string, email: string) => void;
 }) {
-  // Keep typing local; sync to the shared session only after a pause so each
-  // keystroke doesn't trigger a server write (and can't be clobbered by one).
-  const [localName, setLocalName] = useState(visitorName);
-  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const localNameRef = useRef(localName);
-  localNameRef.current = localName;
-
-  useEffect(() => () => {
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-  }, []);
-
-  const handleNameChange = (value: string) => {
-    const next = value.slice(0, 24);
-    setLocalName(next);
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(() => setVisitorName(localNameRef.current), 600);
-  };
-
-  const handleNext = () => {
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    if (localName !== visitorName) setVisitorName(localName);
-    onNext();
-  };
+  const [name, setName] = useState(initialName);
+  const [email, setEmail] = useState(initialEmail);
 
   return (
     <div className="flex flex-1 flex-col justify-center animate-entrance">
-      <StepChip step="Welcome" title="Step into the story." />
-      <div className="glass-panel glow-primary mb-4 rounded-2xl p-5">
+      <StepChip step="Welcome" title="Register your visit." subtitle="Enter your details to log your visit and explore SPX." />
+      <div className="glass-panel glow-primary mb-4 rounded-2xl p-5 space-y-3">
         <input
-          value={localName}
-          onChange={(e) => handleNameChange(e.target.value)}
-          onBlur={() => {
-            if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-            if (localName !== visitorName) setVisitorName(localName);
-          }}
+          value={name}
+          onChange={(e) => setName(e.target.value.slice(0, 48))}
           placeholder="Your name (optional)"
           style={{ fontSize: "16px" }}
           className="w-full rounded-xl border border-border bg-background/60 px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
         />
-      </div>
-      <label className="mb-6 flex items-start gap-3 rounded-xl border border-border bg-background/40 p-4">
         <input
-          type="checkbox"
-          checked={consentGiven}
-          onChange={(e) => setConsentGiven(e.target.checked)}
-          className="mt-0.5 size-4 rounded border-border"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email address (optional)"
+          style={{ fontSize: "16px" }}
+          className="w-full rounded-xl border border-border bg-background/60 px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
         />
-        <span className="text-xs leading-relaxed text-muted-foreground">
-          I'm okay with my photo appearing on the LED wall.
-        </span>
-      </label>
-        <button
-          onClick={handleNext}
-          disabled={!consentGiven}
-          className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
-        >
-          Continue
-        </button>
-    </div>
-  );
-}
-
-function ProcessingScreen({ state, capturedImage }: { state: ExperienceState; capturedImage: string | null }) {
-  const progress = state === "processing" ? 45 : 88;
-  return (
-    <div className="flex flex-1 flex-col animate-entrance">
-      <StepChip
-        step={state === "processing" ? "Step 03" : "Step 04"}
-        title={state === "processing" ? "Composing your portrait…" : "Assembling your cinematic scenes."}
-        subtitle="Watch the LED wall — you're being placed inside the story."
-      />
-      <div className="relative mb-5 min-h-[260px] overflow-hidden rounded-2xl bg-black ring-1 ring-primary/20">
-        {capturedImage && <img src={capturedImage} alt="You" className="absolute inset-0 size-full object-cover" />}
-        <div className="absolute inset-0 bg-black/45" />
-        <div className="absolute inset-x-4 bottom-4 space-y-3">
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-            <div className="h-full bg-primary transition-all duration-1000" style={{ width: `${progress}%` }} />
-          </div>
-          <div className="flex justify-between font-mono text-[9px] uppercase tracking-widest text-white/70">
-            <span>{state === "processing" ? "Isolating subject" : "Rendering scenes"}</span>
-            <span className="text-primary">{progress}%</span>
-          </div>
-        </div>
       </div>
-    </div>
-  );
-}
-
-function PlayingScreen({
-  activeChapter,
-  visitorName,
-}: {
-  activeChapter: { id: string; title: string; caption: string; image: string };
-  visitorName: string;
-}) {
-  return (
-    <div className="flex flex-1 flex-col animate-entrance">
-      <StepChip
-        step="Step 04"
-        title={visitorName ? `${visitorName}, you're on the wall.` : "You're on the wall."}
-        subtitle="Look up at the LED screen for your cinematic moment."
-      />
-      <div className="relative mb-5 min-h-[240px] overflow-hidden rounded-2xl ring-1 ring-primary/30">
-        <div
-          className="absolute inset-0 animate-kenburns"
-          style={{ backgroundImage: `url(${activeChapter.image})`, backgroundSize: "cover", backgroundPosition: "center" }}
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
-        <div className="absolute inset-x-4 bottom-4">
-          <span className="block font-mono text-[9px] uppercase tracking-[0.3em] text-primary">Chapter {activeChapter.id}</span>
-          <span className="text-xl font-bold italic tracking-tight">{activeChapter.title}</span>
-          <p className="mt-1 text-xs text-white/75">{activeChapter.caption}</p>
-        </div>
-      </div>
-      <div className="rounded-xl border border-primary/30 bg-primary/10 py-4 text-center">
-        <span className="font-mono text-[10px] uppercase tracking-widest text-primary">Live on the LED wall</span>
-      </div>
+      <button
+        onClick={() => onSubmit(name, email)}
+        className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98]"
+      >
+        Save &amp; Continue
+      </button>
     </div>
   );
 }
 
 function CompletedScreen({
   visitorName,
-  capturedImage,
+  souvenirImage,
   onReset,
 }: {
   visitorName: string;
-  capturedImage: string | null;
+  souvenirImage: string | null;
   onReset: () => void;
 }) {
   const [overlay, setOverlay] = useState<"projects" | "contact" | null>(null);
@@ -426,27 +317,30 @@ function CompletedScreen({
   return (
     <div className="flex flex-1 flex-col animate-entrance">
       <StepChip
-        step="All done"
-        title={visitorName ? `Thank you, ${visitorName}.` : "Thank you for stepping in."}
-        subtitle="Take a souvenir and explore SPX below."
+        step="Welcome"
+        title={visitorName ? `Welcome, ${visitorName}.` : "Welcome to SPX."}
+        subtitle="Explore our business below."
       />
-      <div className="relative mb-5 min-h-[220px] overflow-hidden rounded-2xl ring-2 ring-primary/30">
-        {capturedImage && <img src={capturedImage} alt="Souvenir" className="absolute inset-0 size-full object-cover" />}
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent" />
-        <div className="absolute inset-x-4 bottom-4">
-          <span className="block font-mono text-[9px] uppercase tracking-[0.3em] text-primary">Souvenir</span>
-          <span className="text-lg font-bold italic tracking-tight">SPX / {new Date().toLocaleDateString()}</span>
+
+      {souvenirImage && (
+        <div className="relative mb-4 min-h-[220px] overflow-hidden rounded-2xl ring-2 ring-primary/30">
+          <img src={souvenirImage} alt="Souvenir" className="absolute inset-0 size-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent" />
+          <div className="absolute inset-x-4 bottom-4">
+            <span className="block font-mono text-[9px] uppercase tracking-[0.3em] text-primary">Souvenir</span>
+            <span className="text-lg font-bold italic tracking-tight">SPX / {new Date().toLocaleDateString()}</span>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="flex flex-col gap-2">
-        {capturedImage && (
+        {souvenirImage && (
           <a
-            href={capturedImage}
+            href={souvenirImage}
             download={`spx-souvenir-${Date.now()}.jpg`}
             className="w-full rounded-xl bg-primary py-4 text-center text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110"
           >
-            Save souvenir
+            Save souvenir photo
           </a>
         )}
         <div className="glass-panel space-y-2 rounded-2xl p-3">
@@ -552,22 +446,4 @@ function ActionButton({ label, icon, onClick }: { label: string; icon: string; o
   );
 }
 
-function ErrorScreen({ message, onReset }: { message: string | null; onReset: () => void }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center text-center animate-entrance">
-      <div className="mb-4 flex size-16 items-center justify-center rounded-full border border-destructive/40 bg-destructive/10">
-        <span className="text-2xl text-destructive">!</span>
-      </div>
-      <h3 className="mb-2 text-xl font-bold tracking-tight">Camera unavailable</h3>
-      <p className="max-w-[30ch] text-sm text-muted-foreground">
-        {message ?? "We couldn't access your camera. Please check your browser permissions."}
-      </p>
-      <button
-        onClick={onReset}
-        className="mt-6 rounded-xl bg-primary px-6 py-3 text-[11px] font-bold uppercase tracking-[0.2em] text-primary-foreground"
-      >
-        Try again
-      </button>
-    </div>
-  );
-}
+
