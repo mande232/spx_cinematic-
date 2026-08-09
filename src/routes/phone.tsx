@@ -191,7 +191,7 @@ function PhoneView() {
               consentGiven={consentGiven}
               setVisitorName={(v) => update({ visitorName: v })}
               setConsentGiven={(v) => update({ consentGiven: v })}
-              onNext={() => update({ state: "processing" })}
+              onNext={() => update({ state: "camera_ready" })}
             />
           )}
 

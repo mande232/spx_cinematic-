@@ -249,10 +249,12 @@ export function useSharedSession() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [storageShared, setStorageShared] = useState<boolean | null>(null);
   const latestUpdatedAtRef = useRef<number>(0);
+  const sessionRef = useRef<SharedSession>({ ...DEFAULT_SESSION });
 
   useEffect(() => {
     const restored = readSession();
     latestUpdatedAtRef.current = restored.updatedAt ?? 0;
+    sessionRef.current = restored;
     setSession(restored);
     setPairingToken(readPairingToken());
     if (typeof navigator !== "undefined") setOnline(navigator.onLine);
@@ -275,12 +277,16 @@ export function useSharedSession() {
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === LS_BROADCAST_KEY || e.key === LS_STATE_KEY) {
-        setSession(readSession());
+        const next = readSession();
+        sessionRef.current = next;
+        setSession(next);
       }
     };
 
     const onSessionEvent = () => {
-      setSession(readSession());
+      const next = readSession();
+      sessionRef.current = next;
+      setSession(next);
     };
 
     window.addEventListener("storage", onStorage);
@@ -324,6 +330,7 @@ export function useSharedSession() {
         if (serverUpdatedAt > latestUpdatedAtRef.current) {
           latestUpdatedAtRef.current = serverUpdatedAt;
           writeWholeSession(envelope.session);
+          sessionRef.current = envelope.session;
           setSession(envelope.session);
         }
       }
@@ -340,8 +347,9 @@ export function useSharedSession() {
   }, []);
 
   const update = useCallback((patch: Partial<SharedSession>) => {
-    const nextSession = { ...readSession(), ...patch, updatedAt: Date.now() };
+    const nextSession = { ...sessionRef.current, ...patch, updatedAt: Date.now() };
     writeWholeSession(nextSession);
+    sessionRef.current = nextSession;
     setSession(nextSession);
     latestUpdatedAtRef.current = nextSession.updatedAt;
 
@@ -352,6 +360,7 @@ export function useSharedSession() {
           setPairingToken(nextToken);
         }
         writeWholeSession(serverSession);
+        sessionRef.current = serverSession;
         setSession(serverSession);
         setSynced(true);
         return;
@@ -374,6 +383,7 @@ export function useSharedSession() {
       setSyncError(null);
       latestUpdatedAtRef.current = serverSession.updatedAt ?? Date.now();
       writeWholeSession(serverSession);
+      sessionRef.current = serverSession;
       setSession(serverSession);
       setSynced(true);
     });
@@ -390,6 +400,7 @@ export function useSharedSession() {
     }
     latestUpdatedAtRef.current = next.updatedAt;
     writeWholeSession(next);
+    sessionRef.current = next;
     setSession(next);
     setSynced(Boolean(result));
     return next;
