@@ -47,6 +47,8 @@ export function formatVisitorRecord(
   };
 }
 
+// sd
+
 export async function patchSession(
   patch: Partial<SharedSession>,
   options?: { pairingToken?: string; admin?: boolean; env?: StorageEnv },
