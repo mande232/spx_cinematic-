@@ -20,7 +20,6 @@ function PhoneView() {
   const { session, update, reset, online, synced, syncError, clearSyncError } = useSharedSession();
   const { state, capturedImage, processedImage, visitorName, chapterIndex, consentGiven } = session;
 
-  const [countdown, setCountdown] = useState(3);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
@@ -124,36 +123,6 @@ function PhoneView() {
     });
   }, [syncError, clearSyncError]);
 
-  // Mirror the LED-wall countdown locally for remote UI feedback.
-  useEffect(() => {
-    if (state !== "countdown") {
-      setCountdown(3);
-      return;
-    }
-    setCountdown(3);
-    let remaining = 3;
-    const timer = window.setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        window.clearInterval(timer);
-        setCountdown(0);
-        return;
-      }
-      setCountdown(remaining);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [state]);
-
-  const confirmPortrait = useCallback(() => {
-    if (!capturedImage) return;
-    update({ state: "processing" });
-    void trackAnalyticsEvent("portrait_confirmed", {});
-  }, [capturedImage, update]);
-
-  const retakePortrait = useCallback(() => {
-    update({ state: "camera_ready", capturedImage: null, processedImage: null });
-  }, [update]);
-
   const endSession = useCallback(() => {
     setErrorMessage(null);
     setSessionEnded(false);
@@ -181,7 +150,7 @@ function PhoneView() {
   }, [update]);
 
   const activeChapter = CHAPTERS[Math.min(chapterIndex, CHAPTERS.length - 1)];
-  const reviewing = state === "capturing" && Boolean(capturedImage);
+  const reviewing = false;
   const stepIndex = getPhoneStepIndex(state, reviewing);
 
   return (
@@ -216,37 +185,25 @@ function PhoneView() {
           {sessionBusy && !invalidPairing && <SessionBusyScreen onRetry={retrySession} />}
           {sessionEnded && !invalidPairing && <SessionEndedScreen onRestart={retrySession} />}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && reviewing && (
-            <ReviewScreen image={capturedImage!} onRetake={retakePortrait} onConfirm={confirmPortrait} />
-          )}
-
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && (state === "idle" || state === "scanned") && (
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && (state === "idle" || state === "scanned") && (
             <ScannedScreen
               visitorName={visitorName}
               consentGiven={consentGiven}
               setVisitorName={(v) => update({ visitorName: v })}
               setConsentGiven={(v) => update({ consentGiven: v })}
-              onNext={() => update({ state: "camera_ready" })}
+              onNext={() => update({ state: "processing" })}
             />
           )}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && (state === "camera_ready" || state === "countdown" || state === "capturing") && (
-            <RemoteCameraScreen
-              state={state}
-              countdown={countdown}
-              onCapture={() => update({ state: "countdown" })}
-            />
-          )}
-
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && (state === "processing" || state === "rendering") && (
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && (state === "camera_ready" || state === "countdown" || state === "capturing" || state === "processing" || state === "rendering") && (
             <ProcessingScreen state={state} capturedImage={processedImage ?? capturedImage} />
           )}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && state === "playing" && (
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "playing" && (
             <PlayingScreen activeChapter={activeChapter} visitorName={visitorName} />
           )}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && state === "completed" && (
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "completed" && (
             <CompletedScreen
               visitorName={visitorName}
               capturedImage={processedImage ?? capturedImage}
@@ -254,7 +211,7 @@ function PhoneView() {
             />
           )}
 
-          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && !reviewing && state === "error" && (
+          {!joining && !sessionEnded && !sessionBusy && !invalidPairing && state === "error" && (
             <ErrorScreen message={errorMessage} onReset={retrySession} />
           )}
         </div>
@@ -385,102 +342,13 @@ function ScannedScreen({
           I'm okay with my photo appearing on the LED wall.
         </span>
       </label>
-      <button
-        onClick={handleNext}
-        disabled={!consentGiven}
-        className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
-      >
-        Start
-      </button>
-    </div>
-  );
-}
-
-function RemoteCameraScreen({
-  state,
-  countdown,
-  onCapture,
-}: {
-  state: ExperienceState;
-  countdown: number;
-  onCapture: () => void;
-}) {
-  return (
-    <div className="flex flex-1 flex-col animate-entrance">
-      <StepChip
-        step={state === "countdown" || state === "capturing" ? "Hold still" : "Step 02"}
-        title={state === "countdown" ? "LED camera is counting down…" : state === "capturing" ? "Photo captured." : "Position yourself at the LED wall."}
-        subtitle={state === "camera_ready" ? "Look at the camera mounted above the display, then trigger it here." : "Keep looking at the LED camera."}
-      />
-      <div className="relative mb-5 flex min-h-[300px] items-center justify-center overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-muted/30">
-        <div className="absolute inset-6 rounded-2xl border border-dashed border-primary/30" />
-        <div className="relative flex flex-col items-center gap-4 text-center">
-          <div className="flex size-24 items-center justify-center rounded-full border border-primary/40 bg-primary/10">
-            <span className="text-4xl" aria-hidden="true">◉</span>
-          </div>
-          <div>
-            <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-primary">LED wall camera</span>
-            <span className="mt-1 block text-sm text-muted-foreground">
-              {state === "camera_ready" ? "Ready for remote trigger" : state === "countdown" ? "Capturing in a moment" : "Sending preview to this phone"}
-            </span>
-          </div>
-        </div>
-        {state === "countdown" && (
-          <div className="absolute right-4 top-4 flex size-12 items-center justify-center rounded-full border border-primary/40 bg-background/80">
-            <span className="font-mono text-lg font-bold text-primary">{countdown}</span>
-          </div>
-        )}
-      </div>
-      {state === "camera_ready" ? (
         <button
-          onClick={onCapture}
-          className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98]"
+          onClick={handleNext}
+          disabled={!consentGiven}
+          className="w-full rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.2em] text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
         >
-          Take photo on LED camera
+          Continue
         </button>
-      ) : (
-        <div className="w-full rounded-xl bg-muted/30 py-4 text-center">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            {state === "capturing" ? "Waiting for photo preview…" : "Please hold still and watch the wall"}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReviewScreen({
-  image,
-  onRetake,
-  onConfirm,
-}: {
-  image: string;
-  onRetake: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="flex flex-1 flex-col animate-entrance">
-      <StepChip step="Review" title="Happy with this portrait?" subtitle="You'll appear on the LED wall with this image." />
-      <div className="relative mb-5 min-h-[320px] overflow-hidden rounded-2xl ring-2 ring-primary/40">
-        <img src={image} alt="Your portrait preview" className="absolute inset-0 size-full object-cover" />
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-4">
-          <span className="font-mono text-[9px] uppercase tracking-widest text-primary">Preview</span>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          onClick={onRetake}
-          className="rounded-xl border border-border py-4 text-xs font-bold uppercase tracking-[0.15em] transition-colors hover:bg-muted/30"
-        >
-          Retake
-        </button>
-        <button
-          onClick={onConfirm}
-          className="rounded-xl bg-primary py-4 text-xs font-bold uppercase tracking-[0.15em] text-primary-foreground transition-all hover:brightness-110"
-        >
-          Use photo
-        </button>
-      </div>
     </div>
   );
 }

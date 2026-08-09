@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 
 import { QRCode } from "@/components/experience/QRCode";
 import { SyncIndicator } from "@/components/experience/SyncIndicator";
@@ -12,8 +13,68 @@ export const Route = createFileRoute("/")({ component: WallView });
 
 const SESSION_TIMEOUT_MS = 90_000;
 const COMPLETED_RESET_MS = 30_000;
+const IDLE_MOTION_THRESHOLD = 8;
+const IDLE_WAVE_PIXEL_THRESHOLD = 90;
+const IDLE_WAVE_DELTA_THRESHOLD = 6;
+const IDLE_WAVE_COOLDOWN_MS = 2000;
+const OPEN_HAND_MIN_FRAMES = 2;
+const HAND_WAVE_MIN_AMPLITUDE = 0.08;
+const HAND_WAVE_MIN_DELTA = 0.012;
+const HAND_WAVE_MIN_REVERSALS = 2;
+const PLAYBACK_GESTURE_COOLDOWN_MS = 1200;
 const AUDIO_URL =
   "https://res.cloudinary.com/djwboszae/video/upload/v1783506840/ElevenLabs_2026-07-08T10_28_27_Caty_-_Droll_Wry_and_Dry_pvc_s50_m2_rl2hy4.mp3";
+
+const HAND_CONNECTIONS: Array<[number, number]> = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+function isOpenHandGesture(landmarks: Array<{ x: number; y: number }>) {
+  if (landmarks.length < 21) return false;
+
+  const fingerChains: Array<[number, number, number]> = [
+    [8, 6, 5],
+    [12, 10, 9],
+    [16, 14, 13],
+    [20, 18, 17],
+  ];
+
+  const extendedFingers = fingerChains.filter(([tip, pip, mcp]) => {
+    return landmarks[tip].y < landmarks[pip].y && landmarks[pip].y < landmarks[mcp].y;
+  }).length;
+
+  const palmWidth = Math.abs(landmarks[5].x - landmarks[17].x);
+  const thumbSpread = Math.hypot(
+    landmarks[4].x - landmarks[5].x,
+    landmarks[4].y - landmarks[5].y,
+  );
+
+  return extendedFingers >= 3 && palmWidth > 0.1 && thumbSpread > 0.08;
+}
+
+function isFistGesture(landmarks: Array<{ x: number; y: number }>) {
+  if (landmarks.length < 21) return false;
+
+  const fingerChains: Array<[number, number]> = [
+    [8, 6],
+    [12, 10],
+    [16, 14],
+    [20, 18],
+  ];
+
+  const curledFingers = fingerChains.filter(([tip, pip]) => landmarks[tip].y > landmarks[pip].y).length;
+  const thumbNearPalm = Math.hypot(
+    landmarks[4].x - landmarks[9].x,
+    landmarks[4].y - landmarks[9].y,
+  ) < 0.16;
+
+  return curledFingers >= 3 && thumbNearPalm;
+}
 
 function WallView() {
   const { session, update, reset, online, synced, pairingToken, maintenanceMode, chapterOverrides, storageShared } = useSharedSession();
@@ -22,19 +83,79 @@ function WallView() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cameraRef = useRef<HTMLVideoElement | null>(null);
+  const idleWallCameraRef = useRef<HTMLVideoElement | null>(null);
+  const gestureVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const idleDetectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackAudioStartedRef = useRef(false);
+  const idleWaveRef = useRef<{
+    rafId: number | null;
+    previousSample: Uint8ClampedArray | null;
+    previousCenterX: number | null;
+    lastTriggerAt: number;
+    handXs: number[];
+    openHandFrames: number;
+  }>({ rafId: null, previousSample: null, previousCenterX: null, lastTriggerAt: 0, handXs: [], openHandFrames: 0 });
+  const playbackGestureRef = useRef<{
+    rafId: number | null;
+    openHandFrames: number;
+    fistFrames: number;
+    lastGestureAt: number;
+  }>({ rafId: null, openHandFrames: 0, fistFrames: 0, lastGestureAt: 0 });
   const [phoneUrl, setPhoneUrl] = useState("/phone");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [wallCountdown, setWallCountdown] = useState(3);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [idleCameraReady, setIdleCameraReady] = useState(false);
+  const [waveDetected, setWaveDetected] = useState(false);
+  const [isNonLocalHost, setIsNonLocalHost] = useState(false);
+  const [idleDebug, setIdleDebug] = useState({ changedPixels: 0, horizontalDelta: 0 });
+  const [idleHandLandmarks, setIdleHandLandmarks] = useState<Array<{ x: number; y: number }>>([]);
+  const [playbackPaused, setPlaybackPaused] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm",
+        );
+        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.35,
+          minHandPresenceConfidence: 0.35,
+          minTrackingConfidence: 0.35,
+        });
+
+        if (!cancelled) {
+          handLandmarkerRef.current = handLandmarker;
+        }
+      } catch {
+        handLandmarkerRef.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      handLandmarkerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const configured = import.meta.env.VITE_PUBLIC_SITE_URL as string | undefined;
     const base = configured?.replace(/\/$/, "") ? `${configured.replace(/\/$/, "")}/phone` : `${window.location.origin}/phone`;
     setPhoneUrl(pairingToken ? getPhoneUrlFromToken(base, pairingToken) : base);
+    setIsNonLocalHost(!["localhost", "127.0.0.1"].includes(window.location.hostname));
 
     const savedTheme = window.localStorage.getItem("spx-theme");
     if (savedTheme === "light" || savedTheme === "dark") {
@@ -55,15 +176,36 @@ function WallView() {
   }, [theme]);
 
   const stopWallCamera = useCallback(() => {
+    if (idleWaveRef.current.rafId) {
+      window.cancelAnimationFrame(idleWaveRef.current.rafId);
+      idleWaveRef.current.rafId = null;
+    }
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
     if (cameraRef.current) cameraRef.current.srcObject = null;
+    if (idleWallCameraRef.current) idleWallCameraRef.current.srcObject = null;
+    if (gestureVideoRef.current) gestureVideoRef.current.srcObject = null;
+    idleWaveRef.current.previousSample = null;
+    idleWaveRef.current.previousCenterX = null;
+    idleWaveRef.current.handXs = [];
+    idleWaveRef.current.openHandFrames = 0;
+    if (playbackGestureRef.current.rafId) {
+      window.cancelAnimationFrame(playbackGestureRef.current.rafId);
+      playbackGestureRef.current.rafId = null;
+    }
+    playbackGestureRef.current.openHandFrames = 0;
+    playbackGestureRef.current.fistFrames = 0;
+    playbackAudioStartedRef.current = false;
+    setIdleCameraReady(false);
+    setWaveDetected(false);
+    setIdleHandLandmarks([]);
+    setPlaybackPaused(false);
   }, []);
 
   useEffect(() => () => stopWallCamera(), [stopWallCamera]);
 
   useEffect(() => {
-    if (state !== "camera_ready" && state !== "countdown") {
+    if (state !== "idle" && state !== "camera_ready" && state !== "countdown" && state !== "playing") {
       if (state !== "capturing") stopWallCamera();
       return;
     }
@@ -86,9 +228,18 @@ function WallView() {
         }
         cameraStreamRef.current = stream;
         setCameraError(null);
+        setIdleCameraReady(true);
         if (cameraRef.current) {
           cameraRef.current.srcObject = stream;
           await cameraRef.current.play().catch(() => undefined);
+        }
+        if (idleWallCameraRef.current) {
+          idleWallCameraRef.current.srcObject = stream;
+          await idleWallCameraRef.current.play().catch(() => undefined);
+        }
+        if (gestureVideoRef.current) {
+          gestureVideoRef.current.srcObject = stream;
+          await gestureVideoRef.current.play().catch(() => undefined);
         }
       })
       .catch(() => {
@@ -100,6 +251,226 @@ function WallView() {
       cancelled = true;
     };
   }, [state, stopWallCamera, update]);
+
+  useEffect(() => {
+    const stream = cameraStreamRef.current;
+    if (!stream) return;
+
+    if (cameraRef.current && cameraRef.current.srcObject !== stream) {
+      cameraRef.current.srcObject = stream;
+      void cameraRef.current.play().catch(() => undefined);
+    }
+
+    if (idleWallCameraRef.current && idleWallCameraRef.current.srcObject !== stream) {
+      idleWallCameraRef.current.srcObject = stream;
+      void idleWallCameraRef.current.play().catch(() => undefined);
+    }
+
+    if (gestureVideoRef.current && gestureVideoRef.current.srcObject !== stream) {
+      gestureVideoRef.current.srcObject = stream;
+      void gestureVideoRef.current.play().catch(() => undefined);
+    }
+  }, [state]);
+
+  useEffect(() => {
+    if (state !== "playing" || !gestureVideoRef.current) return;
+
+    let cancelled = false;
+    const video = gestureVideoRef.current;
+
+    const detectPlaybackGesture = () => {
+      if (cancelled || state !== "playing" || !gestureVideoRef.current) return;
+
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        playbackGestureRef.current.rafId = window.requestAnimationFrame(detectPlaybackGesture);
+        return;
+      }
+
+      const handResult = handLandmarkerRef.current?.detectForVideo(video, Date.now());
+      const landmarks = handResult?.landmarks?.[0]?.map((point) => ({ x: 1 - point.x, y: point.y })) ?? [];
+
+      const openHandDetected = isOpenHandGesture(landmarks);
+      const fistDetected = isFistGesture(landmarks);
+
+      playbackGestureRef.current.openHandFrames = openHandDetected
+        ? playbackGestureRef.current.openHandFrames + 1
+        : 0;
+      playbackGestureRef.current.fistFrames = fistDetected
+        ? playbackGestureRef.current.fistFrames + 1
+        : 0;
+
+      const now = Date.now();
+      if (now - playbackGestureRef.current.lastGestureAt > PLAYBACK_GESTURE_COOLDOWN_MS) {
+        if (playbackGestureRef.current.openHandFrames >= 2 && !playbackPaused) {
+          playbackGestureRef.current.lastGestureAt = now;
+          setPlaybackPaused(true);
+          void trackAnalyticsEvent("playback_gesture", { gesture: "open_palm_pause" });
+        } else if (playbackGestureRef.current.fistFrames >= 2 && playbackPaused) {
+          playbackGestureRef.current.lastGestureAt = now;
+          setPlaybackPaused(false);
+          void trackAnalyticsEvent("playback_gesture", { gesture: "fist_play" });
+        }
+      }
+
+      playbackGestureRef.current.rafId = window.requestAnimationFrame(detectPlaybackGesture);
+    };
+
+    playbackGestureRef.current.rafId = window.requestAnimationFrame(detectPlaybackGesture);
+
+    return () => {
+      cancelled = true;
+      if (playbackGestureRef.current.rafId) {
+        window.cancelAnimationFrame(playbackGestureRef.current.rafId);
+        playbackGestureRef.current.rafId = null;
+      }
+      playbackGestureRef.current.openHandFrames = 0;
+      playbackGestureRef.current.fistFrames = 0;
+    };
+  }, [chapterIndex, playbackPaused, state, update]);
+
+  useEffect(() => {
+    if (state !== "idle" || !idleWallCameraRef.current) return;
+
+    let cancelled = false;
+    const video = idleWallCameraRef.current;
+    const analysisCanvas = idleDetectionCanvasRef.current ?? document.createElement("canvas");
+    idleDetectionCanvasRef.current = analysisCanvas;
+    const context = analysisCanvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return;
+
+    const analyze = () => {
+      if (cancelled || !idleWallCameraRef.current || state !== "idle") return;
+
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        idleWaveRef.current.rafId = window.requestAnimationFrame(analyze);
+        return;
+      }
+
+      const width = 160;
+      const height = 90;
+      analysisCanvas.width = width;
+      analysisCanvas.height = height;
+      context.drawImage(video, 0, 0, width, height);
+      const frame = context.getImageData(0, 0, width, height);
+      const previous = idleWaveRef.current.previousSample;
+
+      let changedPixels = 0;
+      let xSum = 0;
+      if (previous) {
+        for (let i = 0; i < frame.data.length; i += 16) {
+          const diff =
+            Math.abs(frame.data[i] - previous[i]) +
+            Math.abs(frame.data[i + 1] - previous[i + 1]) +
+            Math.abs(frame.data[i + 2] - previous[i + 2]);
+          if (diff > IDLE_MOTION_THRESHOLD) {
+            changedPixels += 1;
+            xSum += (i / 4) % width;
+          }
+        }
+      }
+
+      idleWaveRef.current.previousSample = new Uint8ClampedArray(frame.data);
+
+      const handResult = handLandmarkerRef.current?.detectForVideo(video, Date.now());
+      const landmarks =
+        handResult?.landmarks?.[0]?.map((point) => ({ x: 1 - point.x, y: point.y })) ?? [];
+      setIdleHandLandmarks(landmarks);
+
+      const openHandDetected = isOpenHandGesture(landmarks);
+      idleWaveRef.current.openHandFrames = openHandDetected
+        ? idleWaveRef.current.openHandFrames + 1
+        : 0;
+      const openHandReady = idleWaveRef.current.openHandFrames >= OPEN_HAND_MIN_FRAMES;
+
+      const trackedHandX =
+        landmarks.length > 0
+          ? landmarks.reduce((sum, point) => sum + point.x, 0) / landmarks.length
+          : null;
+      if (trackedHandX !== null && openHandReady) {
+        idleWaveRef.current.handXs = [...idleWaveRef.current.handXs.slice(-9), trackedHandX];
+      } else {
+        idleWaveRef.current.handXs = [];
+      }
+
+      let landmarkWaveDetected = false;
+      const xs = idleWaveRef.current.handXs;
+      if (xs.length >= 4) {
+        const amplitude = Math.max(...xs) - Math.min(...xs);
+        let reversals = 0;
+        let lastDirection = 0;
+        for (let i = 1; i < xs.length; i += 1) {
+          const delta = xs[i] - xs[i - 1];
+          if (Math.abs(delta) < HAND_WAVE_MIN_DELTA) continue;
+          const direction = delta > 0 ? 1 : -1;
+          if (lastDirection !== 0 && direction !== lastDirection) reversals += 1;
+          lastDirection = direction;
+        }
+        landmarkWaveDetected =
+          openHandReady && amplitude >= HAND_WAVE_MIN_AMPLITUDE && reversals >= HAND_WAVE_MIN_REVERSALS;
+      }
+
+      if (changedPixels > IDLE_WAVE_PIXEL_THRESHOLD) {
+        const centerX = xSum / Math.max(changedPixels, 1);
+        const previousCenterX = idleWaveRef.current.previousCenterX;
+        const horizontalDelta = previousCenterX === null ? 0 : Math.abs(centerX - previousCenterX);
+        idleWaveRef.current.previousCenterX = centerX;
+        const motionWaveDetected = openHandReady && horizontalDelta > IDLE_WAVE_DELTA_THRESHOLD;
+        const detected = landmarkWaveDetected || motionWaveDetected;
+        setWaveDetected(detected);
+        setIdleDebug({ changedPixels, horizontalDelta: Number(horizontalDelta.toFixed(1)) });
+
+        const now = Date.now();
+        if (detected && now - idleWaveRef.current.lastTriggerAt > IDLE_WAVE_COOLDOWN_MS) {
+          idleWaveRef.current.lastTriggerAt = now;
+          update({ state: "camera_ready", consentGiven: true });
+          void trackAnalyticsEvent("wall_wave_started", {
+            trigger: landmarkWaveDetected ? "open_hand_wave" : "open_hand_motion_wave",
+          });
+          return;
+        }
+      } else {
+        idleWaveRef.current.previousCenterX = null;
+        setWaveDetected(landmarkWaveDetected);
+        setIdleDebug({ changedPixels, horizontalDelta: 0 });
+        if (!landmarks.length) setIdleHandLandmarks([]);
+
+        const now = Date.now();
+        if (landmarkWaveDetected && now - idleWaveRef.current.lastTriggerAt > IDLE_WAVE_COOLDOWN_MS) {
+          idleWaveRef.current.lastTriggerAt = now;
+          update({ state: "camera_ready", consentGiven: true });
+          void trackAnalyticsEvent("wall_wave_started", { trigger: "landmark_wave" });
+          return;
+        }
+      }
+
+      idleWaveRef.current.rafId = window.requestAnimationFrame(analyze);
+    };
+
+    idleWaveRef.current.rafId = window.requestAnimationFrame(analyze);
+
+    return () => {
+      cancelled = true;
+      if (idleWaveRef.current.rafId) {
+        window.cancelAnimationFrame(idleWaveRef.current.rafId);
+        idleWaveRef.current.rafId = null;
+      }
+      idleWaveRef.current.previousSample = null;
+      idleWaveRef.current.previousCenterX = null;
+      idleWaveRef.current.handXs = [];
+      idleWaveRef.current.openHandFrames = 0;
+      setWaveDetected(false);
+      setIdleDebug({ changedPixels: 0, horizontalDelta: 0 });
+      setIdleHandLandmarks([]);
+    };
+  }, [state, update]);
+
+  useEffect(() => {
+    if (state !== "camera_ready") return;
+    const timer = window.setTimeout(() => {
+      update({ state: "countdown" });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [state, update]);
 
   useEffect(() => {
     if (state !== "countdown") return;
@@ -137,7 +508,7 @@ function WallView() {
         context.scale(-1, 1);
         context.drawImage(video, 0, 0, width, height);
         const portrait = await compressPortrait(canvas.toDataURL("image/jpeg", 0.92));
-        update({ capturedImage: portrait, processedImage: null, state: "capturing" });
+        update({ capturedImage: portrait, processedImage: null, state: "processing" });
         void trackAnalyticsEvent("wall_camera_captured", {});
         stopWallCamera();
       })();
@@ -169,7 +540,7 @@ function WallView() {
   // drivers (second tab, server echo) set the same next index, which is
   // idempotent — playback can never accelerate or "scratch".
   useEffect(() => {
-    if (state !== "playing") return;
+    if (state !== "playing" || playbackPaused) return;
 
     const isLastChapter = chapterIndex >= CHAPTERS.length - 1;
     const timer = window.setTimeout(() => {
@@ -181,18 +552,27 @@ function WallView() {
     }, isLastChapter ? 4000 : 3200);
 
     return () => window.clearTimeout(timer);
-  }, [state, chapterIndex, update]);
+  }, [state, chapterIndex, playbackPaused, update]);
 
   useEffect(() => {
+    if (!audioRef.current) return;
+
     if (state === "playing") {
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
+      if (!playbackPaused) {
+        if (!playbackAudioStartedRef.current) {
+          audioRef.current.currentTime = 0;
+          playbackAudioStartedRef.current = true;
+        }
         audioRef.current.play().catch(() => undefined);
+      } else {
+        audioRef.current.pause();
       }
-    } else {
-      audioRef.current?.pause();
+      return;
     }
-  }, [state]);
+
+    audioRef.current.pause();
+    playbackAudioStartedRef.current = false;
+  }, [playbackPaused, state]);
 
   const resetSession = useCallback(() => {
     if (audioRef.current) {
@@ -230,7 +610,7 @@ function WallView() {
 
   const chapters = getChapters(chapterOverrides);
   const activeChapter = chapters[Math.min(chapterIndex, chapters.length - 1)];
-  const meta = STATE_LABELS[state];
+  const meta = STATE_LABELS[state as ExperienceState] ?? { step: "01", label: "Idle", hint: "" };
 
   if (maintenanceMode) {
     return (
@@ -253,7 +633,6 @@ function WallView() {
           </div>
           <div className="hidden sm:block">
             <p className="text-sm font-semibold tracking-tight">Cinematic Welcome</p>
-            <p className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">LED Reception Display</p>
           </div>
         </div>
 
@@ -287,7 +666,7 @@ function WallView() {
       </header>
 
       <main className="pt-28 md:pt-32 p-4 md:p-8 space-y-5">
-        {storageShared === false && typeof window !== "undefined" && !["localhost", "127.0.0.1"].includes(window.location.hostname) && (
+        {storageShared === false && isNonLocalHost && (
           <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
             <span className="font-mono text-[9px] uppercase tracking-widest text-destructive block mb-1">
               Shared storage not configured
@@ -314,15 +693,14 @@ function WallView() {
           visitorName={visitorName}
           phoneUrl={phoneUrl}
           cameraRef={cameraRef}
+          idleWallCameraRef={idleWallCameraRef}
           countdown={wallCountdown}
           cameraError={cameraError}
-          onDemoStart={() => {
-            update({ state: "scanned" });
-            void trackAnalyticsEvent("wall_demo_start", {});
-            if (typeof window !== "undefined" && phoneUrl.includes("session=")) {
-              window.location.assign(phoneUrl);
-            }
-          }}
+          idleCameraReady={idleCameraReady}
+          waveDetected={waveDetected}
+          idleDebug={idleDebug}
+          idleHandLandmarks={idleHandLandmarks}
+          playbackPaused={playbackPaused}
         />
 
         <nav className="pt-6 flex justify-between border-t border-border">
@@ -373,15 +751,12 @@ function WallView() {
             Addis Ababa · ET · SPX Reception
           </div>
         </div>
-        <div className="text-right">
-          <span className="block text-4xl font-black italic leading-none tracking-tighter text-foreground/15 uppercase dark:text-white/10">
-            Future / Forward
-          </span>
-        </div>
+       
       </footer>
 
       <audio ref={audioRef} src={AUDIO_URL} preload="auto" />
       <canvas ref={captureCanvasRef} className="hidden" aria-hidden="true" />
+      <video ref={gestureVideoRef} className="hidden" playsInline muted aria-hidden="true" />
     </div>
   );
 }
@@ -394,9 +769,14 @@ function LedWall({
   visitorName,
   phoneUrl,
   cameraRef,
+  idleWallCameraRef,
   countdown,
   cameraError,
-  onDemoStart,
+  idleCameraReady,
+  waveDetected,
+  idleDebug,
+  idleHandLandmarks,
+  playbackPaused,
 }: {
   state: ExperienceState;
   chapter: Chapter;
@@ -405,9 +785,14 @@ function LedWall({
   visitorName: string;
   phoneUrl: string;
   cameraRef: React.RefObject<HTMLVideoElement | null>;
+  idleWallCameraRef: React.RefObject<HTMLVideoElement | null>;
   countdown: number;
   cameraError: string | null;
-  onDemoStart: () => void;
+  idleCameraReady: boolean;
+  waveDetected: boolean;
+  idleDebug: { changedPixels: number; horizontalDelta: number };
+  idleHandLandmarks: Array<{ x: number; y: number }>;
+  playbackPaused: boolean;
 }) {
   const isIdle = state === "idle" || state === "scanned";
 
@@ -424,6 +809,14 @@ function LedWall({
           transition: "filter 1.2s var(--ease-cinematic)",
         }}
       />
+      {isIdle && (
+        <video
+          ref={idleWallCameraRef}
+          className="absolute inset-0 size-full -scale-x-100 object-cover opacity-20 mix-blend-screen"
+          playsInline
+          muted
+        />
+      )}
       <div className="led-vignette absolute inset-0" />
       <div className="absolute top-0 inset-x-0 z-30 h-6 border-b border-border/70 bg-background/70 backdrop-blur-sm md:h-8 dark:border-white/5 dark:bg-black/60" />
       <div className="absolute bottom-0 inset-x-0 z-30 h-6 border-t border-border/70 bg-background/70 backdrop-blur-sm md:h-8 dark:border-white/5 dark:bg-black/60" />
@@ -439,9 +832,11 @@ function LedWall({
         {isIdle && (
           <IdleLedContent
             scanned={state === "scanned"}
-            phoneUrl={phoneUrl}
             visitorName={visitorName}
-            onDemoStart={onDemoStart}
+            idleCameraReady={idleCameraReady}
+            waveDetected={waveDetected}
+            idleDebug={idleDebug}
+            idleHandLandmarks={idleHandLandmarks}
           />
         )}
 
@@ -458,8 +853,8 @@ function LedWall({
         {(state === "processing" || state === "rendering") && (
           <ProcessingLedContent capturedImage={capturedImage} state={state} />
         )}
-        {state === "playing" && <PlayingLedContent chapter={chapter} capturedImage={capturedImage} />}
-        {state === "completed" && <CompletedLedContent visitorName={visitorName} />}
+        {state === "playing" && <PlayingLedContent chapter={chapter} capturedImage={capturedImage} playbackPaused={playbackPaused} />}
+        {state === "completed" && <CompletedLedContent visitorName={visitorName} phoneUrl={phoneUrl} />}
         {state === "error" && (
           <div className="text-center">
             <span className="font-mono text-[10px] uppercase tracking-[0.4em] text-destructive block mb-3">
@@ -504,14 +899,18 @@ function LedWall({
 
 function IdleLedContent({
   scanned,
-  phoneUrl,
   visitorName,
-  onDemoStart,
+  idleCameraReady,
+  waveDetected,
+  idleDebug,
+  idleHandLandmarks,
 }: {
   scanned: boolean;
-  phoneUrl: string;
   visitorName: string;
-  onDemoStart: () => void;
+  idleCameraReady: boolean;
+  waveDetected: boolean;
+  idleDebug: { changedPixels: number; horizontalDelta: number };
+  idleHandLandmarks: Array<{ x: number; y: number }>;
 }) {
   return (
     <div className="flex w-full max-w-5xl flex-col items-center gap-8 md:flex-row md:items-center md:justify-between md:gap-12">
@@ -521,9 +920,7 @@ function IdleLedContent({
           {scanned ? "Connected" : "Welcome to SPX"}
         </span>
         <h1 className="led-text-shadow mt-3 text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-4xl">
-          Step into
-          <br />
-          <span className="text-primary">the story.</span>
+          Step into <span className="text-primary"> the story.</span>
         </h1>
         {scanned ? (
           <p className="mt-3 font-mono text-[9px] uppercase tracking-widest text-primary">
@@ -531,33 +928,59 @@ function IdleLedContent({
           </p>
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">
-            Scan the QR with your phone, or open the phone flow here for a demo.
           </p>
         )}
-        <button
-          type="button"
-          onClick={onDemoStart}
-          disabled={scanned || !phoneUrl.includes("session=")}
-          className={`mt-6 w-full rounded-xl px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] transition md:w-auto ${
-            scanned || !phoneUrl.includes("session=")
-              ? "cursor-not-allowed border border-border bg-background/60 text-muted-foreground"
-              : "bg-primary text-primary-foreground hover:brightness-110"
-          }`}
-        >
-          {scanned ? "Session active" : phoneUrl.includes("session=") ? "Demo start" : "Preparing…"}
-        </button>
+        {/* <div className="mt-6 flex flex-wrap items-center gap-3 text-[10px] font-mono uppercase tracking-[0.14em]">
+          <span className={`rounded-full border px-3 py-2 ${idleCameraReady ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>
+            {idleCameraReady ? "Camera ready" : "Preparing camera"}
+          </span>
+          <span className={`rounded-full border px-3 py-2 ${waveDetected ? "border-primary/30 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>
+            {waveDetected ? "Wave detected" : "Awaiting wave"}
+          </span>
+        </div> */}
       </div>
 
-      {/* Right — QR only */}
-      <div className="w-full max-w-[260px] shrink-0 animate-entrance">
-        <div className={`rounded-[1.75rem] bg-white p-3 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.3)] ring-1 ring-black/5 ${scanned ? "ring-2 ring-primary/40" : ""}`}>
-          <div className="overflow-hidden rounded-[1.25rem]">
-            <QRCode value={phoneUrl} size={240} className="size-full object-contain" />
+      <div className="w-full max-w-[280px] shrink-0 animate-entrance rounded-[2rem] border border-primary/20 bg-gradient-to-b from-background/80 to-black/40 p-5 text-center shadow-[0_20px_60px_-30px_rgba(0,0,0,0.7)] backdrop-blur-sm">
+        <div className="rounded-2xl border border-primary/15 bg-black/25 p-4 text-left">
+          <div className="relative aspect-square overflow-hidden rounded-2xl border border-primary/15 bg-[radial-gradient(circle_at_top,rgba(92,190,255,0.16),transparent_55%),rgba(0,0,0,0.35)]">
+            <svg className="h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+              {HAND_CONNECTIONS.map(([from, to]) => {
+                const start = idleHandLandmarks[from];
+                const end = idleHandLandmarks[to];
+                if (!start || !end) return null;
+                return (
+                  <line
+                    key={`${from}-${to}`}
+                    x1={start.x * 100}
+                    y1={start.y * 100}
+                    x2={end.x * 100}
+                    y2={end.y * 100}
+                    stroke="rgba(92, 190, 255, 0.9)"
+                    strokeWidth="0.7"
+                  />
+                );
+              })}
+              {idleHandLandmarks.map((point, index) => (
+                <circle
+                  key={index}
+                  cx={point.x * 100}
+                  cy={point.y * 100}
+                  r={index === 0 ? 1.7 : 1.2}
+                  fill={index === 0 ? "rgba(255, 170, 70, 0.98)" : "rgba(92, 190, 255, 0.98)"}
+                />
+              ))}
+            </svg>
+            {idleHandLandmarks.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center px-4 text-center font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
+                Open palm + wave
+              </div>
+            )}
+          </div>
+          <div className="mt-4 flex items-center justify-center gap-2 font-mono text-[9px] uppercase tracking-[0.16em] text-white/55">
+            <span className={`h-1.5 w-1.5 rounded-full ${idleHandLandmarks.length > 0 ? "bg-primary" : "bg-white/20"}`} />
+            {idleHandLandmarks.length > 0 ? "Hand in frame" : "Waiting for hand"}
           </div>
         </div>
-        <p className="mt-3 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
-          Scan with your phone
-        </p>
       </div>
     </div>
   );
@@ -637,11 +1060,7 @@ function WallCameraContent({
         <h1 className="led-text-shadow mt-3 text-3xl font-extrabold uppercase italic tracking-[-0.04em] text-foreground md:text-5xl">
           {reviewing ? "Approve or retake." : "Look at the camera."}
         </h1>
-        <p className="mt-3 text-sm text-muted-foreground">
-          {error ?? (reviewing
-            ? "Your phone is now the remote control for this portrait."
-            : "Stand in the marked area. Trigger the photo from your phone when ready.")}
-        </p>
+       
       </div>
     </div>
   );
@@ -650,9 +1069,11 @@ function WallCameraContent({
 function PlayingLedContent({
   chapter,
   capturedImage,
+  playbackPaused,
 }: {
   chapter: Chapter;
   capturedImage: string | null;
+  playbackPaused: boolean;
 }) {
   return (
     <>
@@ -667,32 +1088,66 @@ function PlayingLedContent({
         <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-primary block mb-2">Chapter {chapter.id}</span>
         <h2 className="led-text-shadow text-2xl font-bold italic tracking-[-0.04em] text-foreground md:text-[2.5rem]">{chapter.title}</h2>
         <p className="mt-2 text-pretty text-xs leading-5 text-muted-foreground md:text-sm">{chapter.caption}</p>
+        {playbackPaused && (
+          <div className="mt-4 inline-flex rounded-full border border-primary/30 bg-black/40 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-primary">
+            Paused
+          </div>
+        )}
+      </div>
+      <div className="absolute bottom-8 right-6 z-30 rounded-2xl border border-white/10 bg-black/35 px-4 py-3 text-right backdrop-blur-md md:right-12">
+        <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-white/65">Gestures</div>
+        <div className="mt-2 space-y-1 font-mono text-[10px] uppercase tracking-[0.16em] text-white/80">
+          <div>✋ Open Palm · Pause</div>
+          <div>✊ Fist · Play</div>
+        </div>
       </div>
     </>
   );
 }
 
-function CompletedLedContent({ visitorName }: { visitorName: string }) {
+function CompletedLedContent({ visitorName, phoneUrl }: { visitorName: string; phoneUrl: string }) {
   return (
-    <div className="text-center animate-entrance">
-      <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary block mb-4">The film is yours</span>
-      <h1 className="led-text-shadow text-4xl font-extrabold uppercase italic leading-none tracking-[-0.05em] text-foreground md:text-6xl">
-        Welcome
-        {visitorName ? (
-          <>
-            ,
-            <br />
-            <span className="text-primary">{visitorName}.</span>
-          </>
-        ) : (
-          <>
-            {" "}to
-            <br />
-            <span className="text-primary">SPX.</span>
-          </>
-        )}
-      </h1>
-      <p className="mt-5 text-sm text-muted-foreground">A souvenir is waiting on your device.</p>
+    <div className="flex w-full max-w-5xl flex-col items-center gap-8 text-center animate-entrance md:flex-row md:items-center md:justify-between md:gap-12 md:text-left">
+      <div>
+        <span className="font-mono text-[9px] md:text-[10px] uppercase tracking-[0.34em] text-primary block mb-4">The film is yours</span>
+        <h1 className="led-text-shadow text-4xl font-extrabold uppercase italic leading-none tracking-[-0.05em] text-foreground md:text-6xl">
+          Thank you
+          {visitorName ? (
+            <>
+              ,
+              <br />
+              <span className="text-primary">{visitorName}.</span>
+            </>
+          ) : (
+            <>
+              <br />
+              <span className="text-primary">for visiting SPX.</span>
+            </>
+          )}
+        </h1>
+        <p className="mt-5 max-w-xl text-sm text-muted-foreground md:text-base">
+          For your experience, scan and download your file here.
+        </p>
+      </div>
+
+      <div className="w-full max-w-[320px] shrink-0">
+        <div className="rounded-[1.75rem] bg-white p-3 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.3)] ring-1 ring-black/5">
+          <div className="overflow-hidden rounded-[1.25rem]">
+            <QRCode value={phoneUrl} size={280} className="size-full object-contain" />
+          </div>
+        </div>
+        <a
+          href={phoneUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-4 block rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-center font-mono text-[10px] uppercase tracking-[0.24em] text-primary transition-colors hover:bg-primary/15"
+        >
+          Demo mobile view
+        </a>
+        <p className="mt-4 text-center font-mono text-[10px] uppercase tracking-[0.24em] text-primary">
+          Scan to download your experience
+        </p>
+      </div>
     </div>
   );
 }
