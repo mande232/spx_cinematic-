@@ -15,6 +15,7 @@ export type SharedSession = {
   capturedImage: string | null;
   processedImage: string | null;
   visitorName: string;
+  visitorEmail: string;
   chapterIndex: number;
   consentGiven: boolean;
   updatedAt: number;
@@ -23,6 +24,7 @@ export type SharedSession = {
 export type VisitorRecord = {
   id: string;
   name: string;
+  email: string;
   timestamp: number;
   date: string;
   time: string;
@@ -76,6 +78,7 @@ export const DEFAULT_SESSION: SharedSession = {
   capturedImage: null,
   processedImage: null,
   visitorName: "",
+  visitorEmail: "",
   chapterIndex: 0,
   consentGiven: false,
   updatedAt: Date.now(),
@@ -108,10 +111,12 @@ export function migrateStoreData(raw: Partial<StoreData>): StoreData {
       ...defaults.session,
       ...raw.session,
       processedImage: raw.session?.processedImage ?? null,
+      visitorEmail: raw.session?.visitorEmail ?? "",
       consentGiven: raw.session?.consentGiven ?? false,
     },
     visitors: (raw.visitors ?? []).map((v) => ({
       ...v,
+      email: v.email ?? "",
       consentGiven: v.consentGiven ?? false,
     })),
     sessionStartedAt: raw.sessionStartedAt ?? null,

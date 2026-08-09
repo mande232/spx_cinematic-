@@ -30,6 +30,7 @@ export function formatVisitorRecord(
   return {
     id: `${timestamp}-${Math.random().toString(36).slice(2, 7)}`,
     name: session.visitorName ?? "",
+    email: session.visitorEmail ?? "",
     timestamp,
     date: new Date(timestamp).toLocaleDateString("en-GB", {
       day: "2-digit",
